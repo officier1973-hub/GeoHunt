@@ -23,9 +23,9 @@ if (flutterVersionName == null) {
 }
 
 android {
-    namespace "com.example.hunt_together"
-    compileSdk flutter.compileSdkVersion
-    ndkVersion flutter.ndkVersion
+    namespace "com.example.GeoHunt"
+    compileSdk 34
+    ndkVersion "26.1.10909125"
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
