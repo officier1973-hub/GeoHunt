@@ -1,0 +1,65 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: {}   # позволяет запускать сборку вручную из вкладки Actions
+
+# Отменяем предыдущие запуски для той же ветки/PR, чтобы не тратить минуты
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true   # кэширует Flutter SDK и pub-пакеты
+
+      # Кэш Gradle ускоряет повторные сборки (первый раз ~5–8 мин, потом ~2–3 мин)
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # Опционально: статический анализ. Если не нужен — закомментируйте шаг.
+      - name: Flutter analyze
+        run: flutter analyze
+
+      # Сборка APK. По умолчанию release использует debug-подпись,
+      # поэтому APK установится на телефон без дополнительной настройки keystore.
+      - name: Build APK
+        run: flutter build apk --release
+
+      # Загружаем APK как артефакт, чтобы скачать его со страницы запуска
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7   # артефакт хранится 7 дней (можно изменить)
