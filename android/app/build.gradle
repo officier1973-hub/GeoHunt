@@ -23,7 +23,7 @@ if (flutterVersionName == null) {
 }
 
 android {
-    namespace "com.example.GeoHunt"
+    namespace "com.example.hunt_together"
     compileSdk 36
     ndkVersion "28.2.13676358"
 
