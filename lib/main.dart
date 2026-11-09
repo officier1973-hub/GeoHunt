@@ -38,20 +38,43 @@ class _MapScreenState extends State<MapScreen> {
   bool _locating = false;
   bool _firstFix = true;
 
-  static const String _onlineStyle = '''
+static const String _onlineStyle = '''
 {
   "version": 8,
-  "name": "OSM",
+  "name": "OpenFreeMap",
   "sources": {
-    "osm": {
-      "type": "raster",
-      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      "tileSize": 256,
-      "attribution": "© OpenStreetMap contributors"
+    "openfreemap": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
     }
   },
   "layers": [
-    { "id": "osm", "type": "raster", "source": "osm" }
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#f8f4f0" }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "water",
+      "paint": { "fill-color": "#a0c8f0" }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "openfreemap",
+      "source-layer": "landuse",
+      "paint": { "fill-color": "#e0e0e0", "fill-opacity": 0.5 }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "openfreemap",
+      "source-layer": "transportation",
+      "paint": { "line-color": "#ffffff", "line-width": 1.5 }
+    }
   ]
 }
 ''';
