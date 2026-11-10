@@ -37,25 +37,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<Position>? _posSub;
   bool _locating = false;
   bool _firstFix = true;
-  int _mapKey = 0; // ключ для пересоздания карты при resume
-
-  static const String _onlineStyle = '''
-{
-  "version": 8,
-  "name": "OSM",
-  "sources": {
-    "osm": {
-      "type": "raster",
-      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      "tileSize": 256,
-      "attribution": "© OpenStreetMap contributors"
-    }
-  },
-  "layers": [
-    { "id": "osm", "type": "raster", "source": "osm" }
-  ]
-}
-''';
+  int _mapKey = 0;
 
   @override
   void initState() {
@@ -68,7 +50,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
-    _mapCtrl?.dispose(); // освобождаем нативный ресурс
+    _mapCtrl?.dispose();
     _mapCtrl = null;
     super.dispose();
   }
@@ -76,7 +58,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Пересоздаём карту при возврате в приложение — лечит "замороженный" MapLibre
       _mapCtrl = null;
       _myCircle = null;
       _firstFix = true;
@@ -173,7 +154,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       appBar: AppBar(title: const Text('GeoHunt')),
       body: MaplibreMap(
         key: ValueKey(_mapKey),
-        styleString: _onlineStyle,
+        // ✅ Используем встроенный стиль OpenFreeMap — без 403 и без ключей
+        styleString: MapLibreStyles.openfreemapLiberty,
         initialCameraPosition: CameraPosition(
           target: _myPos ?? const LatLng(55.751244, 37.618423),
           zoom: _myPos != null ? 15 : 3,
@@ -187,6 +169,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         doubleClickZoomEnabled: true,
         compassEnabled: true,
         trackCameraPosition: true,
+        // На случай, если OpenFreeMap когда-нибудь начнёт проверять User-Agent
+        userAgentPackageName: 'com.example.hunt_together',
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _startLocation,
