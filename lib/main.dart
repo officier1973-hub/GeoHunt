@@ -30,51 +30,29 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MaplibreMapController? _mapCtrl;
   LatLng? _myPos;
   Circle? _myCircle;
   StreamSubscription<Position>? _posSub;
   bool _locating = false;
   bool _firstFix = true;
+  int _mapKey = 0; // ключ для пересоздания карты при resume
 
-static const String _onlineStyle = '''
+  static const String _onlineStyle = '''
 {
   "version": 8,
-  "name": "OpenFreeMap",
+  "name": "OSM",
   "sources": {
-    "openfreemap": {
-      "type": "vector",
-      "url": "https://tiles.openfreemap.org/planet"
+    "osm": {
+      "type": "raster",
+      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap contributors"
     }
   },
   "layers": [
-    {
-      "id": "background",
-      "type": "background",
-      "paint": { "background-color": "#f8f4f0" }
-    },
-    {
-      "id": "water",
-      "type": "fill",
-      "source": "openfreemap",
-      "source-layer": "water",
-      "paint": { "fill-color": "#a0c8f0" }
-    },
-    {
-      "id": "landuse",
-      "type": "fill",
-      "source": "openfreemap",
-      "source-layer": "landuse",
-      "paint": { "fill-color": "#e0e0e0", "fill-opacity": 0.5 }
-    },
-    {
-      "id": "roads",
-      "type": "line",
-      "source": "openfreemap",
-      "source-layer": "transportation",
-      "paint": { "line-color": "#ffffff", "line-width": 1.5 }
-    }
+    { "id": "osm", "type": "raster", "source": "osm" }
   ]
 }
 ''';
@@ -82,7 +60,28 @@ static const String _onlineStyle = '''
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _startLocation();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _posSub?.cancel();
+    _mapCtrl?.dispose(); // освобождаем нативный ресурс
+    _mapCtrl = null;
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Пересоздаём карту при возврате в приложение — лечит "замороженный" MapLibre
+      _mapCtrl = null;
+      _myCircle = null;
+      _firstFix = true;
+      if (mounted) setState(() => _mapKey++);
+    }
   }
 
   Future<void> _startLocation() async {
@@ -128,7 +127,9 @@ static const String _onlineStyle = '''
     await _updateCircle(ll);
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      await _mapCtrl!.animateCamera(CameraUpdate.newLatLngZoom(ll, 15));
+      try {
+        await _mapCtrl!.animateCamera(CameraUpdate.newLatLngZoom(ll, 15));
+      } catch (_) {}
     }
   }
 
@@ -152,9 +153,12 @@ static const String _onlineStyle = '''
 
   Future<void> _onMapCreated(MaplibreMapController ctrl) async {
     _mapCtrl = ctrl;
+    _myCircle = null;
     if (_myPos != null) {
       await _updateCircle(_myPos!);
-      await ctrl.animateCamera(CameraUpdate.newLatLngZoom(_myPos!, 15));
+      try {
+        await ctrl.animateCamera(CameraUpdate.newLatLngZoom(_myPos!, 15));
+      } catch (_) {}
     }
   }
 
@@ -164,22 +168,25 @@ static const String _onlineStyle = '''
   }
 
   @override
-  void dispose() {
-    _posSub?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('GeoHunt')),
       body: MaplibreMap(
+        key: ValueKey(_mapKey), // пересоздание при resume
         styleString: _onlineStyle,
-        initialCameraPosition: const CameraPosition(
-          target: LatLng(55.751244, 37.618423),
-          zoom: 3,
+        initialCameraPosition: CameraPosition(
+          target: _myPos ?? const LatLng(55.751244, 37.618423),
+          zoom: _myPos != null ? 15 : 3,
         ),
         onMapCreated: _onMapCreated,
+        dragEnabled: true,
+        zoomEnabled: true,
+        rotateEnabled: true,
+        tiltEnabled: true,
+        doubleClickZoomEnabled: true,
+        scrollZoomEnabled: true,
+        compassEnabled: true,
+        trackCameraPosition: true,
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _startLocation,
