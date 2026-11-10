@@ -38,6 +38,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _locating = false;
   bool _firstFix = true;
   int _mapKey = 0;
+  bool _styleLoaded = false;
 
   @override
   void initState() {
@@ -60,6 +61,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _mapCtrl = null;
       _myCircle = null;
+      _styleLoaded = false;
       _firstFix = true;
       if (mounted) setState(() => _mapKey++);
     }
@@ -105,7 +107,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _myPos = ll;
       _locating = false;
     });
-    await _updateCircle(ll);
+    if (_styleLoaded) {
+      await _updateCircle(ll);
+    }
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
       try {
@@ -116,7 +120,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _updateCircle(LatLng pos) async {
     final ctrl = _mapCtrl;
-    if (ctrl == null) return;
+    if (ctrl == null || !_styleLoaded) return;
     try {
       if (_myCircle == null) {
         _myCircle = await ctrl.addCircle(CircleOptions(
@@ -129,17 +133,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } else {
         await ctrl.updateCircle(_myCircle!, CircleOptions(geometry: pos));
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Ошибка при работе с кругом: $e');
+    }
   }
 
   Future<void> _onMapCreated(MaplibreMapController ctrl) async {
     _mapCtrl = ctrl;
     _myCircle = null;
+  }
+
+  void _onStyleLoaded() {
+    _styleLoaded = true;
     if (_myPos != null) {
-      await _updateCircle(_myPos!);
-      try {
-        await ctrl.animateCamera(CameraUpdate.newLatLngZoom(_myPos!, 15));
-      } catch (_) {}
+      _updateCircle(_myPos!);
     }
   }
 
@@ -154,13 +161,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       appBar: AppBar(title: const Text('GeoHunt')),
       body: MaplibreMap(
         key: ValueKey(_mapKey),
-        // ✅ Используем встроенный стиль OpenFreeMap — без 403 и без ключей
-        styleString: MapLibreStyles.openfreemapLiberty,
+        // ✅ Прямая ссылка на стиль OpenFreeMap Liberty — работает в 0.21.0
+        styleString: 'https://tiles.openfreemap.org/styles/liberty',
         initialCameraPosition: CameraPosition(
           target: _myPos ?? const LatLng(55.751244, 37.618423),
           zoom: _myPos != null ? 15 : 3,
         ),
         onMapCreated: _onMapCreated,
+        onStyleLoadedCallback: _onStyleLoaded,
         dragEnabled: true,
         zoomGesturesEnabled: true,
         rotateGesturesEnabled: true,
@@ -169,8 +177,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         doubleClickZoomEnabled: true,
         compassEnabled: true,
         trackCameraPosition: true,
-        // На случай, если OpenFreeMap когда-нибудь начнёт проверять User-Agent
-        userAgentPackageName: 'com.example.hunt_together',
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _startLocation,
