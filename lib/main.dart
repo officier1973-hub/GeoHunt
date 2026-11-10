@@ -40,6 +40,39 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _mapKey = 0;
   bool _styleLoaded = false;
 
+  // 0: Улицы (Liberty), 1: Спутник (Sentinel-2), 2: Гибрид (OpenFreeMap Satellite)
+  int _currentStyleIndex = 0;
+
+  // --- Определения стилей ---
+
+  // 1. Спутник (чистый) на основе растровых тайлов EOX Sentinel-2
+  static const String _satelliteStyle = '''
+  {
+    "version": 8,
+    "name": "Satellite",
+    "sources": {
+      "satellite": {
+        "type": "raster",
+        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg"],
+        "tileSize": 256,
+        "attribution": "Sentinel-2 cloudless by EOX"
+      }
+    },
+    "layers": [
+      { "id": "satellite", "type": "raster", "source": "satellite" }
+    ]
+  }
+  ''';
+
+  // Список URL стилей для переключения
+  final List<String> _styleUrls = [
+    'https://tiles.openfreemap.org/styles/liberty', // Улицы
+    _satelliteStyle, // Спутник (наш JSON)
+    'https://tiles.openfreemap.org/styles/satellite', // Гибрид
+  ];
+
+  final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
+
   @override
   void initState() {
     super.initState();
@@ -65,6 +98,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _firstFix = true;
       if (mounted) setState(() => _mapKey++);
     }
+  }
+
+  void _cycleStyle() {
+    setState(() {
+      _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
+      _mapCtrl = null;
+      _myCircle = null;
+      _styleLoaded = false;
+      _mapKey++; // Принудительное пересоздание карты с новым стилем
+    });
   }
 
   Future<void> _startLocation() async {
@@ -158,11 +201,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('GeoHunt')),
+      appBar: AppBar(
+        title: const Text('GeoHunt'),
+        actions: [
+          // Кнопка переключения стиля
+          TextButton.icon(
+            onPressed: _cycleStyle,
+            icon: const Icon(Icons.layers, color: Colors.white),
+            label: Text(
+              _styleNames[_currentStyleIndex],
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
       body: MaplibreMap(
-        key: ValueKey(_mapKey),
-        // ✅ Прямая ссылка на стиль OpenFreeMap Liberty — работает в 0.21.0
-        styleString: 'https://tiles.openfreemap.org/styles/liberty',
+        key: ValueKey(_mapKey), // Пересоздание карты при смене стиля
+        styleString: _styleUrls[_currentStyleIndex],
         initialCameraPosition: CameraPosition(
           target: _myPos ?? const LatLng(55.751244, 37.618423),
           zoom: _myPos != null ? 15 : 3,
