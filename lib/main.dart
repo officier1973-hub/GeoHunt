@@ -172,7 +172,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(title: const Text('GeoHunt')),
       body: MaplibreMap(
-        key: ValueKey(_mapKey), // пересоздание при resume
+        key: ValueKey(_mapKey),
         styleString: _onlineStyle,
         initialCameraPosition: CameraPosition(
           target: _myPos ?? const LatLng(55.751244, 37.618423),
@@ -180,11 +180,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         onMapCreated: _onMapCreated,
         dragEnabled: true,
-        zoomEnabled: true,
-        rotateEnabled: true,
-        tiltEnabled: true,
+        zoomGesturesEnabled: true,
+        rotateGesturesEnabled: true,
+        tiltGesturesEnabled: true,
+        scrollGesturesEnabled: true,
         doubleClickZoomEnabled: true,
-        scrollZoomEnabled: true,
         compassEnabled: true,
         trackCameraPosition: true,
       ),
