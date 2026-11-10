@@ -40,12 +40,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _mapKey = 0;
   bool _styleLoaded = false;
 
-  // 0: Улицы (Liberty), 1: Спутник (Sentinel-2), 2: Гибрид (OpenFreeMap Satellite)
   int _currentStyleIndex = 0;
 
-  // --- Определения стилей ---
-
-  // 1. Спутник (чистый) на основе растровых тайлов EOX Sentinel-2
+  // 1. Чистый спутник (EOxCloudless 2025)
   static const String _satelliteStyle = '''
   {
     "version": 8,
@@ -53,9 +50,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     "sources": {
       "satellite": {
         "type": "raster",
-        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg"],
+        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
         "tileSize": 256,
-        "attribution": "Sentinel-2 cloudless by EOX"
+        "minzoom": 0,
+        "maxzoom": 14,
+        "attribution": "<a href=\"https://cloudless.eox.at\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
       }
     },
     "layers": [
@@ -64,11 +63,65 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
   ''';
 
-  // Список URL стилей для переключения
+  // 2. Гибрид (Спутник EOxCloudless + подписи OpenFreeMap Liberty)
+  static const String _hybridStyle = '''
+  {
+    "version": 8,
+    "name": "Hybrid",
+    "sources": {
+      "satellite": {
+        "type": "raster",
+        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
+        "tileSize": 256,
+        "minzoom": 0,
+        "maxzoom": 14,
+        "attribution": "<a href=\"https://cloudless.eox.at\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
+      },
+      "openmaptiles": {
+        "type": "vector",
+        "url": "https://tiles.openfreemap.org/planet"
+      }
+    },
+    "layers": [
+      { "id": "satellite", "type": "raster", "source": "satellite", "minzoom": 0, "maxzoom": 22 },
+      {
+        "id": "water",
+        "type": "fill",
+        "source": "openmaptiles",
+        "source-layer": "water",
+        "paint": { "fill-color": "#a0c8f0", "fill-opacity": 0.3 }
+      },
+      {
+        "id": "road_shield",
+        "type": "line",
+        "source": "openmaptiles",
+        "source-layer": "transportation",
+        "paint": { "line-color": "#ffffff", "line-width": 1.5, "line-opacity": 0.6 }
+      },
+      {
+        "id": "place_labels",
+        "type": "symbol",
+        "source": "openmaptiles",
+        "source-layer": "place",
+        "layout": {
+          "text-field": "{name}",
+          "text-size": 12,
+          "text-font": ["Noto Sans Regular"]
+        },
+        "paint": {
+          "text-color": "#ffffff",
+          "text-halo-color": "#000000",
+          "text-halo-width": 1.5
+        }
+      }
+    ]
+  }
+  ''';
+
   final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/liberty', // Улицы
-    _satelliteStyle, // Спутник (наш JSON)
-    'https://tiles.openfreemap.org/styles/satellite', // Гибрид
+    'https://tiles.openfreemap.org/styles/liberty',
+    _satelliteStyle,
+    _hybridStyle,
   ];
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
@@ -106,7 +159,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _mapCtrl = null;
       _myCircle = null;
       _styleLoaded = false;
-      _mapKey++; // Принудительное пересоздание карты с новым стилем
+      _mapKey++;
     });
   }
 
@@ -204,7 +257,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('GeoHunt'),
         actions: [
-          // Кнопка переключения стиля
           TextButton.icon(
             onPressed: _cycleStyle,
             icon: const Icon(Icons.layers, color: Colors.white),
@@ -216,7 +268,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MaplibreMap(
-        key: ValueKey(_mapKey), // Пересоздание карты при смене стиля
+        key: ValueKey(_mapKey),
         styleString: _styleUrls[_currentStyleIndex],
         initialCameraPosition: CameraPosition(
           target: _myPos ?? const LatLng(55.751244, 37.618423),
