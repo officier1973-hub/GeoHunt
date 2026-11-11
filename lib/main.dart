@@ -216,7 +216,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     if (_currentStyleIndex == 2) {
-      // Дороги гибрида: LineStyleLayer.color (без префикса line)
       try {
         final roadsLayer = LineStyleLayer(
           id: 'roads_layer',
@@ -231,7 +230,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         debugPrint('Ошибка добавления слоя дорог: $e');
       }
 
-      // Подписи гибрида
       try {
         final labelsLayer = SymbolStyleLayer(
           id: 'labels_layer',
@@ -268,20 +266,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } catch (_) {}
 
       const sourceId = 'user_location_source';
+      final geoJsonMap = {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [pos.lon, pos.lat],
+        },
+        'properties': <String, dynamic>{},
+      };
+      // ✅ Оборачиваем Map в GeoJsonData.fromMap
       final geoJsonSource = GeoJsonSource.data(
         id: sourceId,
-        data: {
-          'type': 'Feature',
-          'geometry': {
-            'type': 'Point',
-            'coordinates': [pos.lon, pos.lat],
-          },
-          'properties': <String, dynamic>{},
-        },
+        data: GeoJsonData.fromMap(geoJsonMap),
       );
       await style.sources.add(geoJsonSource);
 
-      // Точка пользователя: CircleStyleLayer.color (без префикса circle)
       final circleLayer = CircleStyleLayer(
         id: 'user_location_layer',
         sourceId: sourceId,
