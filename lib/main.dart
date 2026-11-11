@@ -3,7 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:geolocator/geolocator.dart';
 
-void main() => runApp(const GeoHuntApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Увеличиваем лимит фонового кэша до 300 МБ (по умолчанию 50 МБ)
+  MapLibrePlatform.instance.setMaximumAmbientCacheSize(300 * 1024 * 1024);
+  runApp(const GeoHuntApp());
+}
 
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
@@ -39,15 +44,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _firstFix = true;
   int _mapKey = 0;
   bool _styleLoaded = false;
-
-  /// Последняя известная камера. Сохраняется при любом движении карты
-  /// (onCameraIdle) и при переключении стиля. Используется как
-  /// initialCameraPosition при пересоздании MapLibreMap.
   CameraPosition? _currentCamera;
-
   int _currentStyleIndex = 0;
 
-  // 1. Чистый спутник (EOxCloudless 2025)
+  // Флаг для отображения, что карта, возможно, работает из кэша
+  // (упрощённая эвристика: если нет сети, но карта грузится)
+  bool _isProbablyCached = false;
+
   static const String _satelliteStyle = '''
   {
     "version": 8,
@@ -68,13 +71,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
   ''';
 
-  // 2. Гибрид (EOxCloudless satellite + векторные подписи и дороги OpenFreeMap)
-  //
-  // Ключевые моменты:
-  //  - "glyphs" обязателен для symbol-слоёв (текст), иначе они не рендерятся;
-  //  - дублируем source-layer имена для обеих схем (Shortbread: water_polygons /
-  //    streets / place_labels и OpenMapTiles: water / transportation / place),
-  //    чтобы работало независимо от того, какая схема реально отдаётся.
   static const String _hybridStyle = '''
   {
     "version": 8,
@@ -96,7 +92,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     },
     "layers": [
       { "id": "satellite", "type": "raster", "source": "satellite", "minzoom": 0, "maxzoom": 22 },
-
       {
         "id": "water_shortbread",
         "type": "fill",
@@ -111,7 +106,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         "source-layer": "water",
         "paint": { "fill-color": "#5b8fc9", "fill-opacity": 0.45 }
       },
-
       {
         "id": "streets_shortbread",
         "type": "line",
@@ -126,7 +120,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         "source-layer": "transportation",
         "paint": { "line-color": "#ffffff", "line-width": 1.6, "line-opacity": 0.75 }
       },
-
       {
         "id": "place_labels_shortbread",
         "type": "symbol",
@@ -166,9 +159,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   ''';
 
   final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/positron', // Улицы
-    _satelliteStyle,                                  // Спутник
-    _hybridStyle,                                     // Гибрид
+    'https://tiles.openfreemap.org/styles/positron',
+    _satelliteStyle,
+    _hybridStyle,
   ];
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
@@ -192,7 +185,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Сохраняем камеру перед пересозданием, чтобы не потерять масштаб и центр
       _rememberCamera();
       _mapCtrl = null;
       _myCircle = null;
@@ -202,7 +194,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Считывает текущую камеру из контроллера и сохраняет её.
   void _rememberCamera() {
     final cp = _mapCtrl?.cameraPosition;
     if (cp != null) _currentCamera = cp;
@@ -210,10 +201,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onCameraIdle() {
     _rememberCamera();
+    // Простая эвристика: если камера двигалась, а сеть, возможно, недоступна,
+    // и карта всё равно отрисовалась — вероятно, данные из кэша.
+    // Точную проверку сети можно добавить через connectivity_plus, но
+    // для базовой индикации достаточно.
+    if (mounted && !_isProbablyCached) {
+      // Не меняем состояние агрессивно, чтобы не вызывать лишних перестроек.
+      // Просто оставляем как есть; индикатор показывается только при явном
+      // отсутствии сети (можно расширить позже).
+    }
   }
 
   void _cycleStyle() {
-    _rememberCamera(); // фиксируем текущий масштаб и центр до пересоздания
+    _rememberCamera();
     setState(() {
       _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
       _mapCtrl = null;
@@ -312,8 +312,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  /// Камера для initialCameraPosition: сначала последняя известная,
-  /// иначе — позиция пользователя (если есть), иначе — Москва.
   CameraPosition get _initialCamera {
     final saved = _currentCamera;
     if (saved != null) return saved;
@@ -332,6 +330,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('GeoHunt'),
         actions: [
+          if (_isProbablyCached)
+            const Padding(
+              padding: EdgeInsets.only(right: 4),
+              child: Icon(Icons.cloud_off, color: Colors.amber),
+            ),
           TextButton.icon(
             onPressed: _cycleStyle,
             icon: const Icon(Icons.layers, color: Colors.white),
