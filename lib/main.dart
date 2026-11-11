@@ -47,118 +47,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   int _currentStyleIndex = 0;
 
-  static const String _satelliteStyle = '''
-  {
-    "version": 8,
-    "name": "Satellite",
-    "sources": {
-      "satellite": {
-        "type": "raster",
-        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
-        "tileSize": 256,
-        "minzoom": 0,
-        "maxzoom": 14,
-        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
-      }
-    },
-    "layers": [
-      { "id": "satellite", "type": "raster", "source": "satellite" }
-    ]
-  }
-  ''';
+  // URL-адреса тайлов EOxCloudless (проверены)
+  static const String _satelliteTileUrl =
+      'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
 
-  static const String _hybridStyle = '''
-  {
-    "version": 8,
-    "name": "Hybrid",
-    "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-    "sources": {
-      "satellite": {
-        "type": "raster",
-        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
-        "tileSize": 256,
-        "minzoom": 0,
-        "maxzoom": 14,
-        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
-      },
-      "openmaptiles": {
-        "type": "vector",
-        "url": "https://tiles.openfreemap.org/planet"
-      }
-    },
-    "layers": [
-      { "id": "satellite", "type": "raster", "source": "satellite", "minzoom": 0, "maxzoom": 22 },
-      {
-        "id": "water_shortbread",
-        "type": "fill",
-        "source": "openmaptiles",
-        "source-layer": "water_polygons",
-        "paint": { "fill-color": "#5b8fc9", "fill-opacity": 0.45 }
-      },
-      {
-        "id": "water_openmaptiles",
-        "type": "fill",
-        "source": "openmaptiles",
-        "source-layer": "water",
-        "paint": { "fill-color": "#5b8fc9", "fill-opacity": 0.45 }
-      },
-      {
-        "id": "streets_shortbread",
-        "type": "line",
-        "source": "openmaptiles",
-        "source-layer": "streets",
-        "paint": { "line-color": "#ffffff", "line-width": 1.6, "line-opacity": 0.75 }
-      },
-      {
-        "id": "streets_openmaptiles",
-        "type": "line",
-        "source": "openmaptiles",
-        "source-layer": "transportation",
-        "paint": { "line-color": "#ffffff", "line-width": 1.6, "line-opacity": 0.75 }
-      },
-      {
-        "id": "place_labels_shortbread",
-        "type": "symbol",
-        "source": "openmaptiles",
-        "source-layer": "place_labels",
-        "layout": {
-          "text-field": "{name}",
-          "text-size": 13,
-          "text-font": ["Noto Sans Regular"],
-          "text-allow-overlap": false
-        },
-        "paint": {
-          "text-color": "#ffffff",
-          "text-halo-color": "#000000",
-          "text-halo-width": 1.8
-        }
-      },
-      {
-        "id": "place_labels_openmaptiles",
-        "type": "symbol",
-        "source": "openmaptiles",
-        "source-layer": "place",
-        "layout": {
-          "text-field": "{name}",
-          "text-size": 13,
-          "text-font": ["Noto Sans Regular"],
-          "text-allow-overlap": false
-        },
-        "paint": {
-          "text-color": "#ffffff",
-          "text-halo-color": "#000000",
-          "text-halo-width": 1.8
-        }
-      }
-    ]
-  }
-  ''';
-
-  final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/positron',
-    _satelliteStyle,
-    _hybridStyle,
-  ];
+  // Базовый стиль для всех режимов (векторный, легкий)
+  static const String _baseStyleUrl = 'https://tiles.openfreemap.org/styles/positron';
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
 
@@ -196,20 +90,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _rememberCamera();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Правильный способ смены стиля в maplibre 0.4.x:
-  //    меняем style в MapOptions + setState.
-  // ---------------------------------------------------------------
   void _cycleStyle() {
     _rememberCamera();
     setState(() {
-      _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
+      _currentStyleIndex = (_currentStyleIndex + 1) % _styleNames.length;
     });
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Кнопка «Найти меня»: центрирует при КАЖДОМ нажатии
-  // ---------------------------------------------------------------
   Future<void> _centerOnMe() async {
     final pos = _myPos;
     final ctrl = _mapCtrl;
@@ -301,8 +188,55 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapCtrl = ctrl;
   }
 
-  void _onStyleLoaded(StyleController style) {
-    // Стиль загружен. Декларативные слои обновляются автоматически.
+  // ---------------------------------------------------------------
+  // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: добавляем растровые слои программно
+  // ---------------------------------------------------------------
+  Future<void> _onStyleLoaded(StyleController style) async {
+    // Если выбран режим "Спутник" или "Гибрид", добавляем растровый слой
+    if (_currentStyleIndex > 0) {
+      try {
+        // 1. Добавляем источник растровых тайлов
+        const sourceId = 'satellite_source';
+        final rasterSource = RasterSource.tiles(
+          id: sourceId,
+          tiles: [_satelliteTileUrl],
+          tileSize: 256,
+          minZoom: 0,
+          maxZoom: 14,
+          attribution:
+              '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+        );
+        await style.sources.add(rasterSource);
+
+        // 2. Добавляем слой, который отрисовывает этот источник
+        final rasterLayer = RasterStyleLayer(
+          id: 'satellite_layer',
+          sourceId: sourceId,
+        );
+        await style.layers.add(rasterLayer);
+
+        // 3. Для гибрида добавляем векторные подписи поверх спутника
+        if (_currentStyleIndex == 2) {
+          // В базовом стиле Positron уже есть слои с подписями.
+          // Мы добавляем их копии, чтобы они отображались поверх растра.
+          // Это упрощенный подход; в реальном приложении можно
+          // скопировать нужные слои из базового стиля.
+          final labelsLayer = SymbolStyleLayer(
+            id: 'labels_layer',
+            sourceId: 'openmaptiles', // источник из базового стиля Positron
+            sourceLayer: 'place',
+            textField: Expression.literal('{name}'),
+            textSize: Expression.literal(13),
+            textColor: Expression.literal(const Color(0xFFFFFFFF)),
+            textHaloColor: Expression.literal(const Color(0xFF000000)),
+            textHaloWidth: Expression.literal(1.8),
+          );
+          await style.layers.add(labelsLayer);
+        }
+      } catch (e) {
+        debugPrint('Ошибка добавления растрового слоя: $e');
+      }
+    }
   }
 
   void _toast(String msg) {
@@ -350,11 +284,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        // ✅ Ключ зависит от индекса стиля, чтобы виджет пересоздался
-        //    при смене стиля и подхватил новое значение MapOptions.style.
+        // Пересоздаем виджет при смене стиля, чтобы применился новый базовый стиль
         key: ValueKey(_currentStyleIndex),
         options: MapOptions(
-          style: MapStyle.url(_styleUrls[_currentStyleIndex]),
+          // Всегда используем легкий векторный базовый стиль
+          style: MapStyle.url(_baseStyleUrl),
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
