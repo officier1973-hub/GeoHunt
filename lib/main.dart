@@ -245,10 +245,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      // ✅ duration вместо nativeDuration
+      // ✅ nativeDuration вместо duration
       await _mapCtrl?.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
-        duration: const Duration(milliseconds: 500),
+        nativeDuration: const Duration(milliseconds: 500),
       );
       _lastCenter = newPos;
       _lastZoom = 15;
@@ -282,11 +282,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          // ✅ .literal вместо StyleValue.literal
-          color: const .literal(Color(0xFF2E7D32)),
-          radius: const .literal(10),
-          strokeColor: const .literal(Color(0xFFFFFFFF)),
-          strokeWidth: const .literal(2),
+          // ✅ обычные значения вместо .literal
+          color: const Color(0xFF2E7D32),
+          radius: 10,
+          strokeColor: const Color(0xFFFFFFFF),
+          strokeWidth: 2,
         ),
       );
     }
@@ -317,8 +317,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       body: MapLibreMap(
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
-          // ✅ .position вместо InitialCamera.position
-          initCamera: .position(center: center, zoom: zoom),
+          // ✅ InitialCamera.position вместо .position
+          initCamera: InitialCamera.position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
         onStyleLoaded: _onStyleLoaded,
