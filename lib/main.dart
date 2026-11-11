@@ -35,6 +35,7 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapController? _mapCtrl;
+  StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
 
   Geographic? _myPos;
@@ -154,6 +155,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _locating = false;
     });
 
+    // Обновляем стилевой слой с точкой пользователя
+    await _updateUserLocationLayer();
+
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
       await _mapCtrl!.animateCamera(
@@ -185,7 +189,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapCtrl = ctrl;
   }
 
+  // ---------------------------------------------------------------
+  // ✅ Добавляем все стилевые слои (растр, дороги, подписи, точка)
+  // ---------------------------------------------------------------
   Future<void> _onStyleLoaded(StyleController style) async {
+    _styleCtrl = style;
+
+    // 1. Растровый слой для спутника/гибрида
     if (_currentStyleIndex > 0) {
       try {
         const sourceId = 'satellite_source';
@@ -205,26 +215,96 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           sourceId: sourceId,
         );
         await style.layers.add(rasterLayer);
-
-        if (_currentStyleIndex == 2) {
-          // ✅ Типизированные свойства вместо layout/paint (API 0.4.x)
-          final labelsLayer = SymbolStyleLayer(
-            id: 'labels_layer',
-            sourceId: 'openmaptiles',
-            sourceLayerId: 'place',
-            textField: Expression.literal('{name}'),
-            textSize: Expression.literal(13),
-            textColor: Expression.literal(const Color(0xFFFFFFFF)),
-            textHaloColor: Expression.literal(const Color(0xFF000000)),
-            textHaloWidth: Expression.literal(1.8),
-            textFont: Expression.literal(const ['Noto Sans Regular']),
-            textAllowOverlap: Expression.literal(false),
-          );
-          await style.layers.add(labelsLayer);
-        }
       } catch (e) {
         debugPrint('Ошибка добавления растрового слоя: $e');
       }
+    }
+
+    // 2. Слой дорог для гибрида (белые линии поверх спутника)
+    if (_currentStyleIndex == 2) {
+      try {
+        // ✅ OpenFreeMap использует схему Shortbread, слой дорог — 'streets'
+        final roadsLayer = LineStyleLayer(
+          id: 'roads_layer',
+          sourceId: 'openmaptiles', // источник из базового стиля Positron
+          sourceLayerId: 'streets',
+          lineColor: Expression.literal(const Color(0xFFFFFFFF)),
+          lineWidth: Expression.literal(1.5),
+          lineOpacity: Expression.literal(0.8),
+        );
+        await style.layers.add(roadsLayer);
+      } catch (e) {
+        debugPrint('Ошибка добавления слоя дорог: $e');
+      }
+
+      // 3. Слой подписей населённых пунктов для гибрида
+      try {
+        final labelsLayer = SymbolStyleLayer(
+          id: 'labels_layer',
+          sourceId: 'openmaptiles',
+          sourceLayerId: 'place', // или 'place_labels', если так в вашем стиле
+          textField: Expression.literal('{name}'),
+          textSize: Expression.literal(13),
+          textColor: Expression.literal(const Color(0xFFFFFFFF)),
+          textHaloColor: Expression.literal(const Color(0xFF000000)),
+          textHaloWidth: Expression.literal(1.8),
+          textFont: Expression.literal(const ['Noto Sans Regular']),
+          textAllowOverlap: Expression.literal(false),
+        );
+        await style.layers.add(labelsLayer);
+      } catch (e) {
+        debugPrint('Ошибка добавления слоя подписей: $e');
+      }
+    }
+
+    // 4. ✅ Слой с точкой пользователя (поверх всех остальных)
+    await _updateUserLocationLayer();
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ Обновление стилевого слоя с точкой пользователя
+  // ---------------------------------------------------------------
+  Future<void> _updateUserLocationLayer() async {
+    final style = _styleCtrl;
+    final pos = _myPos;
+    if (style == null || pos == null) return;
+
+    try {
+      // Удаляем старый слой и источник, если они есть
+      try {
+        await style.layers.remove('user_location_layer');
+      } catch (_) {}
+      try {
+        await style.sources.remove('user_location_source');
+      } catch (_) {}
+
+      // Создаём источник GeoJSON с текущей точкой
+      const sourceId = 'user_location_source';
+      final geoJsonSource = GeojsonSource(
+        id: sourceId,
+        data: {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [pos.lon, pos.lat],
+          },
+          'properties': <String, dynamic>{},
+        },
+      );
+      await style.sources.add(geoJsonSource);
+
+      // Создаём слой круга, который ссылается на этот источник
+      final circleLayer = CircleStyleLayer(
+        id: 'user_location_layer',
+        sourceId: sourceId,
+        circleColor: Expression.literal(const Color(0xFF2E7D32)),
+        circleRadius: Expression.literal(10),
+        circleStrokeColor: Expression.literal(const Color(0xFFFFFFFF)),
+        circleStrokeWidth: Expression.literal(2),
+      );
+      await style.layers.add(circleLayer);
+    } catch (e) {
+      debugPrint('Ошибка обновления слоя пользователя: $e');
     }
   }
 
@@ -233,22 +313,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // Декларативные аннотации больше не используем для точки,
+  // поэтому список layers пуст.
   List<Layer<Feature<Geometry>>> _buildLayers() {
-    final layers = <Layer<Feature<Geometry>>>[];
-    if (_myPos != null) {
-      layers.add(
-        CircleLayer(
-          points: [
-            Feature(geometry: Point(_myPos!)),
-          ],
-          color: Expression.literal(const Color(0xFF2E7D32)),
-          radius: Expression.literal(10),
-          strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
-          strokeWidth: Expression.literal(2),
-        ),
-      );
-    }
-    return layers;
+    return [];
   }
 
   @override
