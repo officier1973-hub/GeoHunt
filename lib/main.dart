@@ -54,7 +54,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         "tileSize": 256,
         "minzoom": 0,
         "maxzoom": 14,
-        "attribution": "<a href=\"https://cloudless.eox.at\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
+        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
       }
     },
     "layers": [
@@ -63,7 +63,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
   ''';
 
-  // 2. Гибрид (Спутник EOxCloudless + подписи OpenFreeMap Liberty)
+  // 2. Гибрид (Спутник EOxCloudless + подписи OpenFreeMap)
   static const String _hybridStyle = '''
   {
     "version": 8,
@@ -75,7 +75,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         "tileSize": 256,
         "minzoom": 0,
         "maxzoom": 14,
-        "attribution": "<a href=\"https://cloudless.eox.at\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
+        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
       },
       "openmaptiles": {
         "type": "vector",
@@ -119,9 +119,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   ''';
 
   final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/liberty',
-    _satelliteStyle,
-    _hybridStyle,
+    'https://tiles.openfreemap.org/styles/positron', // ✅ Улицы — легкий и быстрый Positron
+    _satelliteStyle,                                  // Спутник
+    _hybridStyle,                                     // Гибрид
   ];
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
