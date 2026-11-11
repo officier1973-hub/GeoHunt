@@ -31,7 +31,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  MaplibreMapController? _mapCtrl;
+  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
+  MapLibreMapController? _mapCtrl;
   LatLng? _myPos;
   Circle? _myCircle;
   StreamSubscription<Position>? _posSub;
@@ -234,7 +235,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _onMapCreated(MaplibreMapController ctrl) async {
+  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
+  Future<void> _onMapCreated(MapLibreMapController ctrl) async {
     _mapCtrl = ctrl;
     _myCircle = null;
   }
@@ -267,7 +269,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: MaplibreMap(
+      // 👇 Переименовано: MapLibreMap вместо MaplibreMap
+      body: MapLibreMap(
         key: ValueKey(_mapKey),
         styleString: _styleUrls[_currentStyleIndex],
         initialCameraPosition: CameraPosition(
