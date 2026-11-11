@@ -47,11 +47,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   int _currentStyleIndex = 0;
 
-  // URL-адреса тайлов EOxCloudless (проверены)
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
-
-  // Базовый стиль для всех режимов (векторный, легкий)
   static const String _baseStyleUrl = 'https://tiles.openfreemap.org/styles/positron';
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
@@ -188,14 +185,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapCtrl = ctrl;
   }
 
-  // ---------------------------------------------------------------
-  // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: добавляем растровые слои программно
-  // ---------------------------------------------------------------
   Future<void> _onStyleLoaded(StyleController style) async {
-    // Если выбран режим "Спутник" или "Гибрид", добавляем растровый слой
     if (_currentStyleIndex > 0) {
       try {
-        // 1. Добавляем источник растровых тайлов
         const sourceId = 'satellite_source';
         final rasterSource = RasterSource.tiles(
           id: sourceId,
@@ -208,28 +200,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
         await style.sources.add(rasterSource);
 
-        // 2. Добавляем слой, который отрисовывает этот источник
         final rasterLayer = RasterStyleLayer(
           id: 'satellite_layer',
           sourceId: sourceId,
         );
         await style.layers.add(rasterLayer);
 
-        // 3. Для гибрида добавляем векторные подписи поверх спутника
         if (_currentStyleIndex == 2) {
-          // В базовом стиле Positron уже есть слои с подписями.
-          // Мы добавляем их копии, чтобы они отображались поверх растра.
-          // Это упрощенный подход; в реальном приложении можно
-          // скопировать нужные слои из базового стиля.
+          // ✅ Исправлено: sourceLayerId вместо sourceLayer и layout/paint
           final labelsLayer = SymbolStyleLayer(
             id: 'labels_layer',
-            sourceId: 'openmaptiles', // источник из базового стиля Positron
-            sourceLayer: 'place',
-            textField: Expression.literal('{name}'),
-            textSize: Expression.literal(13),
-            textColor: Expression.literal(const Color(0xFFFFFFFF)),
-            textHaloColor: Expression.literal(const Color(0xFF000000)),
-            textHaloWidth: Expression.literal(1.8),
+            sourceId: 'openmaptiles',
+            sourceLayerId: 'place', // ✅ правильное имя параметра
+            layout: {
+              'text-field': '{name}',
+              'text-size': 13,
+              'text-font': ['Noto Sans Regular'],
+              'text-allow-overlap': false,
+            },
+            paint: {
+              'text-color': '#FFFFFF',
+              'text-halo-color': '#000000',
+              'text-halo-width': 1.8,
+            },
           );
           await style.layers.add(labelsLayer);
         }
@@ -284,10 +277,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        // Пересоздаем виджет при смене стиля, чтобы применился новый базовый стиль
         key: ValueKey(_currentStyleIndex),
         options: MapOptions(
-          // Всегда используем легкий векторный базовый стиль
           style: MapStyle.url(_baseStyleUrl),
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
         ),
