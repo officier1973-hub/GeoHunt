@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:maplibre/maplibre.dart';
-// Используем префикс geo для geolocator, чтобы избежать конфликта с Position из geobase
 import 'package:geolocator/geolocator.dart' as geo;
 
 void main() {
@@ -246,9 +245,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
+      // ✅ duration вместо nativeDuration
       await _mapCtrl?.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
-        nativeDuration: const Duration(milliseconds: 500),
+        duration: const Duration(milliseconds: 500),
       );
       _lastCenter = newPos;
       _lastZoom = 15;
@@ -282,26 +282,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          color: StyleValue.literal(const Color(0xFF2E7D32)),
-          radius: StyleValue.literal(10),
-          strokeColor: StyleValue.literal(const Color(0xFFFFFFFF)),
-          strokeWidth: StyleValue.literal(2),
+          // ✅ .literal вместо StyleValue.literal
+          color: const .literal(Color(0xFF2E7D32)),
+          radius: const .literal(10),
+          strokeColor: const .literal(Color(0xFFFFFFFF)),
+          strokeWidth: const .literal(2),
         ),
       );
     }
     return layers;
   }
 
-  InitialCamera _initialCamera() {
+  @override
+  Widget build(BuildContext context) {
     final center = _lastCenter ??
         _myPos ??
         const Geographic(lon: 37.618423, lat: 55.751244);
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
-    return InitialCamera.position(center: center, zoom: zoom);
-  }
 
-  @override
-  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('GeoHunt'),
@@ -319,7 +317,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       body: MapLibreMap(
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
-          initCamera: _initialCamera(),
+          // ✅ .position вместо InitialCamera.position
+          initCamera: .position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
         onStyleLoaded: _onStyleLoaded,
