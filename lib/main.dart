@@ -207,22 +207,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         await style.layers.add(rasterLayer);
 
         if (_currentStyleIndex == 2) {
-          // ✅ Исправлено: sourceLayerId вместо sourceLayer и layout/paint
+          // ✅ Типизированные свойства вместо layout/paint (API 0.4.x)
           final labelsLayer = SymbolStyleLayer(
             id: 'labels_layer',
             sourceId: 'openmaptiles',
-            sourceLayerId: 'place', // ✅ правильное имя параметра
-            layout: {
-              'text-field': '{name}',
-              'text-size': 13,
-              'text-font': ['Noto Sans Regular'],
-              'text-allow-overlap': false,
-            },
-            paint: {
-              'text-color': '#FFFFFF',
-              'text-halo-color': '#000000',
-              'text-halo-width': 1.8,
-            },
+            sourceLayerId: 'place',
+            textField: Expression.literal('{name}'),
+            textSize: Expression.literal(13),
+            textColor: Expression.literal(const Color(0xFFFFFFFF)),
+            textHaloColor: Expression.literal(const Color(0xFF000000)),
+            textHaloWidth: Expression.literal(1.8),
+            textFont: Expression.literal(const ['Noto Sans Regular']),
+            textAllowOverlap: Expression.literal(false),
           );
           await style.layers.add(labelsLayer);
         }
