@@ -3,10 +3,17 @@ import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:geolocator/geolocator.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Увеличиваем лимит фонового кэша до 300 МБ (по умолчанию 50 МБ)
-  MapLibrePlatform.instance.setMaximumAmbientCacheSize(300 * 1024 * 1024);
+  // ✅ Правильный способ установки размера ambient cache в maplibre_gl 0.26.1:
+  // создаём OfflineManager и настраиваем кэш через него.
+  try {
+    final offlineManager = await OfflineManager.createInstance();
+    await offlineManager.setMaximumAmbientCacheSize(bytes: 300 * 1024 * 1024);
+    // dispose() здесь не вызываем, чтобы менеджер жил всё время работы приложения.
+  } catch (e) {
+    debugPrint('Не удалось настроить ambient cache: $e');
+  }
   runApp(const GeoHuntApp());
 }
 
@@ -46,10 +53,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _styleLoaded = false;
   CameraPosition? _currentCamera;
   int _currentStyleIndex = 0;
-
-  // Флаг для отображения, что карта, возможно, работает из кэша
-  // (упрощённая эвристика: если нет сети, но карта грузится)
-  bool _isProbablyCached = false;
 
   static const String _satelliteStyle = '''
   {
@@ -201,15 +204,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onCameraIdle() {
     _rememberCamera();
-    // Простая эвристика: если камера двигалась, а сеть, возможно, недоступна,
-    // и карта всё равно отрисовалась — вероятно, данные из кэша.
-    // Точную проверку сети можно добавить через connectivity_plus, но
-    // для базовой индикации достаточно.
-    if (mounted && !_isProbablyCached) {
-      // Не меняем состояние агрессивно, чтобы не вызывать лишних перестроек.
-      // Просто оставляем как есть; индикатор показывается только при явном
-      // отсутствии сети (можно расширить позже).
-    }
   }
 
   void _cycleStyle() {
@@ -330,11 +324,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('GeoHunt'),
         actions: [
-          if (_isProbablyCached)
-            const Padding(
-              padding: EdgeInsets.only(right: 4),
-              child: Icon(Icons.cloud_off, color: Colors.amber),
-            ),
           TextButton.icon(
             onPressed: _cycleStyle,
             icon: const Icon(Icons.layers, color: Colors.white),
