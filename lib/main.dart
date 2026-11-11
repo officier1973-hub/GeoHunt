@@ -275,10 +275,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         },
         'properties': <String, dynamic>{},
       };
-      // ✅ GeoJsonData из строки JSON
+      // ✅ GeoJsonData.text — правильный конструктор для строки JSON
       final geoJsonSource = GeoJsonSource.data(
         id: sourceId,
-        data: GeoJsonData(jsonEncode(geoJsonMap)),
+        data: GeoJsonData.text(jsonEncode(geoJsonMap)),
       );
       await style.sources.add(geoJsonSource);
 
