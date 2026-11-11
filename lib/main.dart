@@ -1,12 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // В maplibre_gl 0.26.1 нет публичного API для изменения размера ambient cache.
-  // Кэш работает автоматически с лимитом по умолчанию (50 МБ).
   runApp(const GeoHuntApp());
 }
 
@@ -36,15 +34,18 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  MapLibreMapController? _mapCtrl;
-  LatLng? _myPos;
-  Circle? _myCircle;
+  MapController? _mapCtrl;
   StreamSubscription<Position>? _posSub;
+
+  // Текущая позиция пользователя в географических координатах
+  Geographic? _myPos;
   bool _locating = false;
   bool _firstFix = true;
-  int _mapKey = 0;
-  bool _styleLoaded = false;
-  CameraPosition? _currentCamera;
+
+  // Текущая камера, чтобы сохранять масштаб при смене стиля и resume
+  Geographic? _lastCenter;
+  double? _lastZoom;
+
   int _currentStyleIndex = 0;
 
   static const String _satelliteStyle = '''
@@ -173,29 +174,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
-    _mapCtrl?.dispose();
-    _mapCtrl = null;
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // В maplibre камера всегда доступна через controller.camera.
+      // При пересоздании виджета мы просто передадим сохранённые значения
+      // в initCamera, чтобы сохранить масштаб и центр.
       _rememberCamera();
-      _mapCtrl = null;
-      _myCircle = null;
-      _styleLoaded = false;
-      _firstFix = true;
-      if (mounted) setState(() => _mapKey++);
+      if (mounted) setState(() {});
     }
   }
 
   void _rememberCamera() {
-    final cp = _mapCtrl?.cameraPosition;
-    if (cp != null) _currentCamera = cp;
+    final cam = _mapCtrl?.camera;
+    if (cam != null) {
+      _lastCenter = cam.center;
+      _lastZoom = cam.zoom;
+    }
   }
 
-  void _onCameraIdle() {
+  void _onCameraMoveEnd() {
     _rememberCamera();
   }
 
@@ -203,10 +204,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _rememberCamera();
     setState(() {
       _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
-      _mapCtrl = null;
-      _myCircle = null;
-      _styleLoaded = false;
-      _mapKey++;
     });
   }
 
@@ -245,53 +242,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _onPosition(Position pos) async {
     if (!mounted) return;
-    final ll = LatLng(pos.latitude, pos.longitude);
+    final newPos = Geographic(lon: pos.longitude, lat: pos.latitude);
     setState(() {
-      _myPos = ll;
+      _myPos = newPos;
       _locating = false;
     });
-    if (_styleLoaded) {
-      await _updateCircle(ll);
-    }
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      try {
-        await _mapCtrl!.animateCamera(CameraUpdate.newLatLngZoom(ll, 15));
-        _currentCamera = _mapCtrl!.cameraPosition;
-      } catch (_) {}
+      _mapCtrl?.animateCamera(
+        center: newPos,
+        zoom: 15,
+        nativeDuration: const Duration(milliseconds: 500),
+      );
+      _lastCenter = newPos;
+      _lastZoom = 15;
     }
   }
 
-  Future<void> _updateCircle(LatLng pos) async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null || !_styleLoaded) return;
-    try {
-      if (_myCircle == null) {
-        _myCircle = await ctrl.addCircle(CircleOptions(
-          geometry: pos,
-          circleColor: '#2E7D32',
-          circleRadius: 10,
-          circleStrokeWidth: 2,
-          circleStrokeColor: '#FFFFFF',
-        ));
-      } else {
-        await ctrl.updateCircle(_myCircle!, CircleOptions(geometry: pos));
-      }
-    } catch (e) {
-      debugPrint('Ошибка при работе с кругом: $e');
-    }
-  }
-
-  Future<void> _onMapCreated(MapLibreMapController ctrl) async {
+  void _onMapCreated(MapController ctrl) {
     _mapCtrl = ctrl;
-    _myCircle = null;
+    // Если позиция уже известна, можно сразу центрироваться
+    if (_myPos != null && _firstFix) {
+      _firstFix = false;
+      ctrl.animateCamera(center: _myPos!, zoom: 15);
+      _lastCenter = _myPos;
+      _lastZoom = 15;
+    }
   }
 
-  void _onStyleLoaded() {
-    _styleLoaded = true;
-    if (_myPos != null) {
-      _updateCircle(_myPos!);
-    }
+  void _onStyleLoaded(StyleController style) {
+    // Стиль загружен. Можно добавлять слои, но мы используем декларативный
+    // CircleLayer в layers, поэтому здесь ничего не нужно.
   }
 
   void _toast(String msg) {
@@ -299,16 +280,34 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  CameraPosition get _initialCamera {
-    final saved = _currentCamera;
-    if (saved != null) return saved;
+  /// Собирает список аннотаций. CircleLayer перерисовывается автоматически
+  /// при изменении _myPos через setState[reference:3].
+  List<Widget> _buildLayers() {
+    final layers = <Widget>[];
     if (_myPos != null) {
-      return CameraPosition(target: _myPos!, zoom: 15);
+      layers.add(
+        CircleLayer(
+          points: [
+            Feature(geometry: Point(_myPos!)),
+          ],
+          color: const StyleValue.literal(Color(0xFF2E7D32)),
+          radius: const StyleValue.literal(10),
+          strokeColor: const StyleValue.literal(Color(0xFFFFFFFF)),
+          strokeWidth: const StyleValue.literal(2),
+        ),
+      );
     }
-    return const CameraPosition(
-      target: LatLng(55.751244, 37.618423),
-      zoom: 3,
-    );
+    return layers;
+  }
+
+  /// Камера для initCamera. Используем сохранённые центр и зум,
+  /// чтобы не сбрасывать масштаб при смене стиля и возврате в приложение.
+  InitialCamera _initialCamera() {
+    final center = _lastCenter ??
+        _myPos ??
+        const Geographic(lon: 37.618423, lat: 55.751244);
+    final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
+    return InitialCamera.position(center: center, zoom: zoom);
   }
 
   @override
@@ -328,20 +327,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        key: ValueKey(_mapKey),
-        styleString: _styleUrls[_currentStyleIndex],
-        initialCameraPosition: _initialCamera,
+        options: MapOptions(
+          style: MapStyle.url(_styleUrls[_currentStyleIndex]),
+          initCamera: _initialCamera(),
+          // Жесты включены по умолчанию, можно не указывать
+        ),
         onMapCreated: _onMapCreated,
-        onStyleLoadedCallback: _onStyleLoaded,
-        onCameraIdle: _onCameraIdle,
-        dragEnabled: true,
-        zoomGesturesEnabled: true,
-        rotateGesturesEnabled: true,
-        tiltGesturesEnabled: true,
-        scrollGesturesEnabled: true,
-        doubleClickZoomEnabled: true,
-        compassEnabled: true,
-        trackCameraPosition: true,
+        onStyleLoaded: _onStyleLoaded,
+        onCameraMoveEnd: _onCameraMoveEnd,
+        layers: _buildLayers(),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _startLocation,
