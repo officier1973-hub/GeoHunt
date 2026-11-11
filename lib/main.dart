@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:maplibre/maplibre.dart';
-// Скрываем Position из geolocator, чтобы избежать конфликта с geobase/maplibre
-import 'package:geolocator/geolocator.dart' hide Position;
+// Используем префикс geo для geolocator, чтобы избежать конфликта с Position из geobase
+import 'package:geolocator/geolocator.dart' as geo;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,7 +36,7 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapController? _mapCtrl;
-  StreamSubscription<Position>? _posSub; // Position теперь однозначно из geolocator
+  StreamSubscription<geo.Position>? _posSub;
 
   Geographic? _myPos;
   bool _locating = false;
@@ -211,32 +211,33 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     if (mounted) setState(() => _locating = true);
     _posSub?.cancel();
-    _posSub = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
+    _posSub = geo.Geolocator.getPositionStream(
+      locationSettings: const geo.LocationSettings(
+        accuracy: geo.LocationAccuracy.high,
         distanceFilter: 5,
       ),
     ).listen(_onPosition);
     try {
-      final cur = await Geolocator.getCurrentPosition(
-        locationSettings:
-            const LocationSettings(accuracy: LocationAccuracy.high),
+      final cur = await geo.Geolocator.getCurrentPosition(
+        locationSettings: const geo.LocationSettings(
+          accuracy: geo.LocationAccuracy.high,
+        ),
       );
       _onPosition(cur);
     } catch (_) {}
   }
 
   Future<bool> _ensurePermission() async {
-    if (!await Geolocator.isLocationServiceEnabled()) return false;
-    var perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
+    if (!await geo.Geolocator.isLocationServiceEnabled()) return false;
+    var perm = await geo.Geolocator.checkPermission();
+    if (perm == geo.LocationPermission.denied) {
+      perm = await geo.Geolocator.requestPermission();
     }
-    return perm == LocationPermission.whileInUse ||
-        perm == LocationPermission.always;
+    return perm == geo.LocationPermission.whileInUse ||
+        perm == geo.LocationPermission.always;
   }
 
-  Future<void> _onPosition(Position pos) async {
+  Future<void> _onPosition(geo.Position pos) async {
     if (!mounted) return;
     final newPos = Geographic(lon: pos.longitude, lat: pos.latitude);
     setState(() {
@@ -245,9 +246,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      _mapCtrl?.animateCamera(
-        center: newPos,
-        zoom: 15,
+      await _mapCtrl?.animateCamera(
+        CameraUpdate.position(center: newPos, zoom: 15),
         nativeDuration: const Duration(milliseconds: 500),
       );
       _lastCenter = newPos;
@@ -259,7 +259,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapCtrl = ctrl;
     if (_myPos != null && _firstFix) {
       _firstFix = false;
-      ctrl.animateCamera(center: _myPos!, zoom: 15);
+      ctrl.animateCamera(CameraUpdate.position(center: _myPos!, zoom: 15));
       _lastCenter = _myPos;
       _lastZoom = 15;
     }
@@ -292,12 +292,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return layers;
   }
 
-  CameraUpdate _initialCamera() {
+  InitialCamera _initialCamera() {
     final center = _lastCenter ??
         _myPos ??
         const Geographic(lon: 37.618423, lat: 55.751244);
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
-    return CameraUpdate.position(center: center, zoom: zoom);
+    return InitialCamera.position(center: center, zoom: zoom);
   }
 
   @override
