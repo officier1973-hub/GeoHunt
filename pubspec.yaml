@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_gl: ^0.21.0
+  maplibre_gl: ^0.26.1   # 👈 обновлено с ^0.21.0
   geolocator: ^14.0.0
   path_provider: ^2.1.3
   cupertino_icons: ^1.0.6
