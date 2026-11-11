@@ -31,7 +31,6 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
   MapLibreMapController? _mapCtrl;
   LatLng? _myPos;
   Circle? _myCircle;
@@ -40,6 +39,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _firstFix = true;
   int _mapKey = 0;
   bool _styleLoaded = false;
+
+  /// Последняя известная камера. Сохраняется при любом движении карты
+  /// (onCameraIdle) и при переключении стиля. Используется как
+  /// initialCameraPosition при пересоздании MapLibreMap.
+  CameraPosition? _currentCamera;
 
   int _currentStyleIndex = 0;
 
@@ -64,11 +68,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
   ''';
 
-  // 2. Гибрид (Спутник EOxCloudless + подписи OpenFreeMap)
+  // 2. Гибрид (EOxCloudless satellite + векторные подписи и дороги OpenFreeMap)
+  //
+  // Ключевые моменты:
+  //  - "glyphs" обязателен для symbol-слоёв (текст), иначе они не рендерятся;
+  //  - дублируем source-layer имена для обеих схем (Shortbread: water_polygons /
+  //    streets / place_labels и OpenMapTiles: water / transportation / place),
+  //    чтобы работало независимо от того, какая схема реально отдаётся.
   static const String _hybridStyle = '''
   {
     "version": 8,
     "name": "Hybrid",
+    "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
     "sources": {
       "satellite": {
         "type": "raster",
@@ -85,34 +96,69 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     },
     "layers": [
       { "id": "satellite", "type": "raster", "source": "satellite", "minzoom": 0, "maxzoom": 22 },
+
       {
-        "id": "water",
+        "id": "water_shortbread",
+        "type": "fill",
+        "source": "openmaptiles",
+        "source-layer": "water_polygons",
+        "paint": { "fill-color": "#5b8fc9", "fill-opacity": 0.45 }
+      },
+      {
+        "id": "water_openmaptiles",
         "type": "fill",
         "source": "openmaptiles",
         "source-layer": "water",
-        "paint": { "fill-color": "#a0c8f0", "fill-opacity": 0.3 }
+        "paint": { "fill-color": "#5b8fc9", "fill-opacity": 0.45 }
+      },
+
+      {
+        "id": "streets_shortbread",
+        "type": "line",
+        "source": "openmaptiles",
+        "source-layer": "streets",
+        "paint": { "line-color": "#ffffff", "line-width": 1.6, "line-opacity": 0.75 }
       },
       {
-        "id": "road_shield",
+        "id": "streets_openmaptiles",
         "type": "line",
         "source": "openmaptiles",
         "source-layer": "transportation",
-        "paint": { "line-color": "#ffffff", "line-width": 1.5, "line-opacity": 0.6 }
+        "paint": { "line-color": "#ffffff", "line-width": 1.6, "line-opacity": 0.75 }
+      },
+
+      {
+        "id": "place_labels_shortbread",
+        "type": "symbol",
+        "source": "openmaptiles",
+        "source-layer": "place_labels",
+        "layout": {
+          "text-field": "{name}",
+          "text-size": 13,
+          "text-font": ["Noto Sans Regular"],
+          "text-allow-overlap": false
+        },
+        "paint": {
+          "text-color": "#ffffff",
+          "text-halo-color": "#000000",
+          "text-halo-width": 1.8
+        }
       },
       {
-        "id": "place_labels",
+        "id": "place_labels_openmaptiles",
         "type": "symbol",
         "source": "openmaptiles",
         "source-layer": "place",
         "layout": {
           "text-field": "{name}",
-          "text-size": 12,
-          "text-font": ["Noto Sans Regular"]
+          "text-size": 13,
+          "text-font": ["Noto Sans Regular"],
+          "text-allow-overlap": false
         },
         "paint": {
           "text-color": "#ffffff",
           "text-halo-color": "#000000",
-          "text-halo-width": 1.5
+          "text-halo-width": 1.8
         }
       }
     ]
@@ -120,7 +166,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   ''';
 
   final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/positron', // ✅ Улицы — легкий и быстрый Positron
+    'https://tiles.openfreemap.org/styles/positron', // Улицы
     _satelliteStyle,                                  // Спутник
     _hybridStyle,                                     // Гибрид
   ];
@@ -146,6 +192,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Сохраняем камеру перед пересозданием, чтобы не потерять масштаб и центр
+      _rememberCamera();
       _mapCtrl = null;
       _myCircle = null;
       _styleLoaded = false;
@@ -154,7 +202,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Считывает текущую камеру из контроллера и сохраняет её.
+  void _rememberCamera() {
+    final cp = _mapCtrl?.cameraPosition;
+    if (cp != null) _currentCamera = cp;
+  }
+
+  void _onCameraIdle() {
+    _rememberCamera();
+  }
+
   void _cycleStyle() {
+    _rememberCamera(); // фиксируем текущий масштаб и центр до пересоздания
     setState(() {
       _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
       _mapCtrl = null;
@@ -211,6 +270,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _firstFix = false;
       try {
         await _mapCtrl!.animateCamera(CameraUpdate.newLatLngZoom(ll, 15));
+        _currentCamera = _mapCtrl!.cameraPosition;
       } catch (_) {}
     }
   }
@@ -235,7 +295,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
   Future<void> _onMapCreated(MapLibreMapController ctrl) async {
     _mapCtrl = ctrl;
     _myCircle = null;
@@ -251,6 +310,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Камера для initialCameraPosition: сначала последняя известная,
+  /// иначе — позиция пользователя (если есть), иначе — Москва.
+  CameraPosition get _initialCamera {
+    final saved = _currentCamera;
+    if (saved != null) return saved;
+    if (_myPos != null) {
+      return CameraPosition(target: _myPos!, zoom: 15);
+    }
+    return const CameraPosition(
+      target: LatLng(55.751244, 37.618423),
+      zoom: 3,
+    );
   }
 
   @override
@@ -269,16 +342,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      // 👇 Переименовано: MapLibreMap вместо MaplibreMap
       body: MapLibreMap(
         key: ValueKey(_mapKey),
         styleString: _styleUrls[_currentStyleIndex],
-        initialCameraPosition: CameraPosition(
-          target: _myPos ?? const LatLng(55.751244, 37.618423),
-          zoom: _myPos != null ? 15 : 3,
-        ),
+        initialCameraPosition: _initialCamera,
         onMapCreated: _onMapCreated,
         onStyleLoadedCallback: _onStyleLoaded,
+        onCameraIdle: _onCameraIdle,
         dragEnabled: true,
         zoomGesturesEnabled: true,
         rotateGesturesEnabled: true,
