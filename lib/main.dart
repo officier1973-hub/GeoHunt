@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
@@ -274,10 +275,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         },
         'properties': <String, dynamic>{},
       };
-      // ✅ Оборачиваем Map в GeoJsonData.fromMap
+      // ✅ GeoJsonData из строки JSON
       final geoJsonSource = GeoJsonSource.data(
         id: sourceId,
-        data: GeoJsonData.fromMap(geoJsonMap),
+        data: GeoJsonData(jsonEncode(geoJsonMap)),
       );
       await style.sources.add(geoJsonSource);
 
