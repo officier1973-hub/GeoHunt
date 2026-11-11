@@ -35,11 +35,16 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapController? _mapCtrl;
+  StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
 
   Geographic? _myPos;
   bool _locating = false;
   bool _firstFix = true;
+
+  // Флаг «пользователь нажал кнопку, но позиции ещё не было»:
+  // после первого фикса сразу центрируем карту.
+  bool _pendingCenter = false;
 
   Geographic? _lastCenter;
   double? _lastZoom;
@@ -195,11 +200,51 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _rememberCamera();
   }
 
-  void _cycleStyle() {
+  // ---------------------------------------------------------------
+  // Переключение стиля через StyleController (надёжнее для 0.4.x)
+  // ---------------------------------------------------------------
+  Future<void> _cycleStyle() async {
     _rememberCamera();
+    final next = (_currentStyleIndex + 1) % _styleUrls.length;
+    final styleCtrl = _styleCtrl;
+    if (styleCtrl != null) {
+      try {
+        await styleCtrl.setStyle(MapStyle.url(_styleUrls[next]));
+        _currentStyleIndex = next;
+        if (mounted) setState(() {});
+        return;
+      } catch (e) {
+        debugPrint('setStyle failed: $e');
+      }
+    }
+    // Fallback: если StyleController ещё не готов — просто меняем индекс,
+    // карта пересоздастся с новым MapOptions.style.
     setState(() {
-      _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
+      _currentStyleIndex = next;
     });
+  }
+
+  // ---------------------------------------------------------------
+  // Кнопка «Найти меня»: центрирует карту при каждом нажатии
+  // ---------------------------------------------------------------
+  Future<void> _centerOnMe() async {
+    final pos = _myPos;
+    final ctrl = _mapCtrl;
+    if (pos == null || ctrl == null) {
+      // Позиции ещё нет — запускаем GPS и запоминаем,
+      // что после первого фикса нужно центрировать.
+      _pendingCenter = true;
+      await _startLocation();
+      return;
+    }
+    await ctrl.animateCamera(
+      CameraUpdate.position(center: pos, zoom: 15),
+      animation: CameraAnimation.fly(
+        duration: const Duration(milliseconds: 500),
+      ),
+    );
+    _lastCenter = pos;
+    _lastZoom = 15;
   }
 
   Future<void> _startLocation() async {
@@ -243,10 +288,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _myPos = newPos;
       _locating = false;
     });
+
+    // Первое автоматическое центрирование при старте
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      // ✅ Используем CameraAnimation.fly с duration
-      await _mapCtrl?.animateCamera(
+      await _mapCtrl!.animateCamera(
+        CameraUpdate.position(center: newPos, zoom: 15),
+        animation: CameraAnimation.fly(
+          duration: const Duration(milliseconds: 500),
+        ),
+      );
+      _lastCenter = newPos;
+      _lastZoom = 15;
+      _pendingCenter = false;
+      return;
+    }
+
+    // Если пользователь нажал «Найти меня» до появления позиции —
+    // центрируем сразу, как только позиция появилась.
+    if (_pendingCenter && _mapCtrl != null) {
+      _pendingCenter = false;
+      await _mapCtrl!.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
         animation: CameraAnimation.fly(
           duration: const Duration(milliseconds: 500),
@@ -259,21 +321,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onMapCreated(MapController ctrl) {
     _mapCtrl = ctrl;
-    if (_myPos != null && _firstFix) {
-      _firstFix = false;
-      ctrl.animateCamera(
-        CameraUpdate.position(center: _myPos!, zoom: 15),
-        animation: CameraAnimation.fly(
-          duration: const Duration(milliseconds: 500),
-        ),
-      );
-      _lastCenter = _myPos;
-      _lastZoom = 15;
-    }
   }
 
-  void _onStyleLoaded(StyleController style) {
-    // Стиль загружен. Декларативные слои обновляются автоматически.
+  Future<void> _onStyleLoaded(StyleController style) async {
+    _styleCtrl = style;
+    // Если позиция уже известна — можно сразу нарисовать круг.
+    // Но круг рисуется декларативно в layers, поэтому ничего не делаем.
   }
 
   void _toast(String msg) {
@@ -289,7 +342,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          // ✅ Expression.literal — стабильный способ задать значения
           color: Expression.literal(const Color(0xFF2E7D32)),
           radius: Expression.literal(10),
           strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
@@ -324,7 +376,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       body: MapLibreMap(
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
-          // ✅ CameraUpdate.position вместо InitialCamera.position
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
@@ -333,7 +384,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         layers: _buildLayers(),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _locating ? null : _startLocation,
+        onPressed: _locating ? null : _centerOnMe,
         child: _locating
             ? const SizedBox(
                 width: 20,
