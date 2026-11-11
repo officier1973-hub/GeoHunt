@@ -245,7 +245,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      // ✅ nativeDuration вместо duration
+      // ✅ nativeDuration — правильное имя параметра для native-платформ
       await _mapCtrl?.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
         nativeDuration: const Duration(milliseconds: 500),
@@ -259,7 +259,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapCtrl = ctrl;
     if (_myPos != null && _firstFix) {
       _firstFix = false;
-      ctrl.animateCamera(CameraUpdate.position(center: _myPos!, zoom: 15));
+      ctrl.animateCamera(
+        CameraUpdate.position(center: _myPos!, zoom: 15),
+        nativeDuration: const Duration(milliseconds: 500),
+      );
       _lastCenter = _myPos;
       _lastZoom = 15;
     }
@@ -282,11 +285,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          // ✅ обычные значения вместо .literal
-          color: const Color(0xFF2E7D32),
-          radius: 10,
-          strokeColor: const Color(0xFFFFFFFF),
-          strokeWidth: 2,
+          // ✅ Используем Expression.literal для цветов и чисел
+          color: Expression.literal(const Color(0xFF2E7D32)),
+          radius: Expression.literal(10),
+          strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
+          strokeWidth: Expression.literal(2),
         ),
       );
     }
@@ -317,7 +320,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       body: MapLibreMap(
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
-          // ✅ InitialCamera.position вместо .position
+          // ✅ InitialCamera.position — стабильный синтаксис
           initCamera: InitialCamera.position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
