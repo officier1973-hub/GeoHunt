@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:maplibre/maplibre.dart';
-import 'package:geolocator/geolocator.dart';
+// Скрываем Position из geolocator, чтобы избежать конфликта с geobase/maplibre
+import 'package:geolocator/geolocator.dart' hide Position;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,14 +36,12 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapController? _mapCtrl;
-  StreamSubscription<Position>? _posSub;
+  StreamSubscription<Position>? _posSub; // Position теперь однозначно из geolocator
 
-  // Текущая позиция пользователя в географических координатах
   Geographic? _myPos;
   bool _locating = false;
   bool _firstFix = true;
 
-  // Текущая камера, чтобы сохранять масштаб при смене стиля и resume
   Geographic? _lastCenter;
   double? _lastZoom;
 
@@ -180,9 +179,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // В maplibre камера всегда доступна через controller.camera.
-      // При пересоздании виджета мы просто передадим сохранённые значения
-      // в initCamera, чтобы сохранить масштаб и центр.
       _rememberCamera();
       if (mounted) setState(() {});
     }
@@ -196,7 +192,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _onCameraMoveEnd() {
+  void _onCameraMoveEnd(MapEventCameraMoveEnd event) {
     _rememberCamera();
   }
 
@@ -261,7 +257,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onMapCreated(MapController ctrl) {
     _mapCtrl = ctrl;
-    // Если позиция уже известна, можно сразу центрироваться
     if (_myPos != null && _firstFix) {
       _firstFix = false;
       ctrl.animateCamera(center: _myPos!, zoom: 15);
@@ -271,8 +266,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _onStyleLoaded(StyleController style) {
-    // Стиль загружен. Можно добавлять слои, но мы используем декларативный
-    // CircleLayer в layers, поэтому здесь ничего не нужно.
+    // Стиль загружен. Декларативные слои обновляются автоматически.
   }
 
   void _toast(String msg) {
@@ -280,34 +274,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  /// Собирает список аннотаций. CircleLayer перерисовывается автоматически
-  /// при изменении _myPos через setState[reference:3].
-  List<Widget> _buildLayers() {
-    final layers = <Widget>[];
+  List<Layer<Feature<Geometry>>> _buildLayers() {
+    final layers = <Layer<Feature<Geometry>>>[];
     if (_myPos != null) {
       layers.add(
         CircleLayer(
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          color: const StyleValue.literal(Color(0xFF2E7D32)),
-          radius: const StyleValue.literal(10),
-          strokeColor: const StyleValue.literal(Color(0xFFFFFFFF)),
-          strokeWidth: const StyleValue.literal(2),
+          color: StyleValue.literal(const Color(0xFF2E7D32)),
+          radius: StyleValue.literal(10),
+          strokeColor: StyleValue.literal(const Color(0xFFFFFFFF)),
+          strokeWidth: StyleValue.literal(2),
         ),
       );
     }
     return layers;
   }
 
-  /// Камера для initCamera. Используем сохранённые центр и зум,
-  /// чтобы не сбрасывать масштаб при смене стиля и возврате в приложение.
-  InitialCamera _initialCamera() {
+  CameraUpdate _initialCamera() {
     final center = _lastCenter ??
         _myPos ??
         const Geographic(lon: 37.618423, lat: 55.751244);
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
-    return InitialCamera.position(center: center, zoom: zoom);
+    return CameraUpdate.position(center: center, zoom: zoom);
   }
 
   @override
@@ -330,7 +320,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
           initCamera: _initialCamera(),
-          // Жесты включены по умолчанию, можно не указывать
         ),
         onMapCreated: _onMapCreated,
         onStyleLoaded: _onStyleLoaded,
