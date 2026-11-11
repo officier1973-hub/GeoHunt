@@ -245,10 +245,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
-      // ✅ nativeDuration — правильное имя параметра для native-платформ
+      // ✅ Используем CameraAnimation.fly с duration
       await _mapCtrl?.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
-        nativeDuration: const Duration(milliseconds: 500),
+        animation: CameraAnimation.fly(
+          duration: const Duration(milliseconds: 500),
+        ),
       );
       _lastCenter = newPos;
       _lastZoom = 15;
@@ -261,7 +263,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _firstFix = false;
       ctrl.animateCamera(
         CameraUpdate.position(center: _myPos!, zoom: 15),
-        nativeDuration: const Duration(milliseconds: 500),
+        animation: CameraAnimation.fly(
+          duration: const Duration(milliseconds: 500),
+        ),
       );
       _lastCenter = _myPos;
       _lastZoom = 15;
@@ -285,7 +289,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           points: [
             Feature(geometry: Point(_myPos!)),
           ],
-          // ✅ Используем Expression.literal для цветов и чисел
+          // ✅ Expression.literal — стабильный способ задать значения
           color: Expression.literal(const Color(0xFF2E7D32)),
           radius: Expression.literal(10),
           strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
@@ -320,8 +324,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       body: MapLibreMap(
         options: MapOptions(
           style: MapStyle.url(_styleUrls[_currentStyleIndex]),
-          // ✅ InitialCamera.position — стабильный синтаксис
-          initCamera: InitialCamera.position(center: center, zoom: zoom),
+          // ✅ CameraUpdate.position вместо InitialCamera.position
+          initCamera: CameraUpdate.position(center: center, zoom: zoom),
         ),
         onMapCreated: _onMapCreated,
         onStyleLoaded: _onStyleLoaded,
