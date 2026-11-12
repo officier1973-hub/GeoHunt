@@ -371,9 +371,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ A3.2: круг + подпись с именем над точкой (подпись с zoom >= 12)
-  // ---------------------------------------------------------------
   Future<void> _updateOthersLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
@@ -417,7 +414,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.sources.add(source);
 
-      // 1) Круг с цветом из properties
       final circleLayer = CircleStyleLayer(
         id: 'others_layer',
         sourceId: sourceId,
@@ -428,18 +424,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.layers.add(circleLayer);
 
-      // 2) Подпись с именем над точкой, видна только с zoom >= 12
       final labelsLayer = SymbolStyleLayer(
         id: 'others_labels_layer',
         sourceId: sourceId,
-        textField: Expression.get('name'),
+        textField: Expression.get('name').asString(), // ✅ приведение к String
         textSize: Expression.literal(12),
         textColor: Expression.literal(const Color(0xFFFFFFFF)),
         textHaloColor: Expression.literal(const Color(0xFF000000)),
         textHaloWidth: Expression.literal(2),
         textFont: Expression.literal(const ['Noto Sans Regular']),
         textAllowOverlap: Expression.literal(false),
-        textOffset: Expression.literal(const [0, 1.2]),
+        textOffset: Expression.literal(const Offset(0, -1.2)), // ✅ Offset вместо List
         minZoom: 12,
       );
       await style.layers.add(labelsLayer);
