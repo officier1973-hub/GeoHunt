@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_session.dart';
 import 'home_screen.dart';
 
@@ -26,6 +27,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double? _lastZoom;
 
   int _currentStyleIndex = 0;
+
+  // Троттлинг записи в БД: не чаще одного обновления в 3 секунды
+  DateTime? _lastDbUpdate;
+  static const _dbUpdateInterval = Duration(seconds: 3);
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -163,6 +168,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _locating = false;
     });
 
+    // ✅ A2: записываем позицию в Supabase (с троттлингом)
+    await _updateMyPositionInDb(newPos);
+
     await _updateUserLocationLayer();
 
     if (_firstFix && _mapCtrl != null) {
@@ -189,6 +197,33 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       _lastCenter = newPos;
       _lastZoom = 15;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ A2: запись своей позиции в таблицу hunters
+  // ---------------------------------------------------------------
+  Future<void> _updateMyPositionInDb(Geographic pos) async {
+    final hunterId = AppSession.hunterId;
+    if (hunterId == null) return;
+
+    // Троттлинг: не чаще одного обновления в 3 секунды
+    final now = DateTime.now();
+    if (_lastDbUpdate != null &&
+        now.difference(_lastDbUpdate!) < _dbUpdateInterval) {
+      return;
+    }
+    _lastDbUpdate = now;
+
+    try {
+      await Supabase.instance.client.from('hunters').update({
+        'lat': pos.lat,
+        'lon': pos.lon,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', hunterId);
+    } catch (e) {
+      // Не критично: при потере сети просто пропускаем обновление
+      debugPrint('Не удалось обновить позицию в БД: $e');
     }
   }
 
