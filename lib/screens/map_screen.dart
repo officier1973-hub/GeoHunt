@@ -128,7 +128,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (confirmed != true) return;
 
-    // ✅ Удаляем свою строку из hunters, чтобы освободить имя и убрать точку с карты
     final hunterId = AppSession.hunterId;
     if (hunterId != null) {
       try {
@@ -372,11 +371,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ---------------------------------------------------------------
+  // ✅ A3.2: круг + подпись с именем над точкой (подпись с zoom >= 12)
+  // ---------------------------------------------------------------
   Future<void> _updateOthersLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
 
     try {
+      try {
+        await style.layers.remove('others_labels_layer');
+      } catch (_) {}
       try {
         await style.layers.remove('others_layer');
       } catch (_) {}
@@ -412,7 +417,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.sources.add(source);
 
-      final layer = CircleStyleLayer(
+      // 1) Круг с цветом из properties
+      final circleLayer = CircleStyleLayer(
         id: 'others_layer',
         sourceId: sourceId,
         color: Expression.get('color').convertToColor(),
@@ -420,7 +426,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
         strokeWidth: Expression.literal(2),
       );
-      await style.layers.add(layer);
+      await style.layers.add(circleLayer);
+
+      // 2) Подпись с именем над точкой, видна только с zoom >= 12
+      final labelsLayer = SymbolStyleLayer(
+        id: 'others_labels_layer',
+        sourceId: sourceId,
+        textField: Expression.get('name'),
+        textSize: Expression.literal(12),
+        textColor: Expression.literal(const Color(0xFFFFFFFF)),
+        textHaloColor: Expression.literal(const Color(0xFF000000)),
+        textHaloWidth: Expression.literal(2),
+        textFont: Expression.literal(const ['Noto Sans Regular']),
+        textAllowOverlap: Expression.literal(false),
+        textOffset: Expression.literal(const [0, 1.2]),
+        minZoom: 12,
+      );
+      await style.layers.add(labelsLayer);
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
     }
