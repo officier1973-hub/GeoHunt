@@ -384,8 +384,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           sourceId: sourceId,
           iconImage: Expression.literal('user_arrow'),
           iconSize: Expression.literal(1.0),
-          iconRotate: Expression.get('bearing').asNumber(), // ✅ приведение к num
-          iconRotationAlignment: IconRotationAlignment.map, // ✅ enum, не строка
+          iconRotate: Expression.get('bearing').asNumber(),
+          // ✅ Оборачиваем enum в Expression.literal
+          iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
           iconAllowOverlap: Expression.literal(true),
           iconIgnorePlacement: Expression.literal(true),
         );
