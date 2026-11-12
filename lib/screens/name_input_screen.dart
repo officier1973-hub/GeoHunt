@@ -68,6 +68,21 @@ class _NameInputScreenState extends State<NameInputScreen> {
         MaterialPageRoute(builder: (_) => const MapScreen()),
         (_) => false,
       );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      // ✅ 23505 = unique violation (group_id + lower(name))
+      if (e.code == '23505') {
+        setState(() {
+          _error =
+              'Имя «$name» уже занято в этой группе. Выберите другое.';
+          _saving = false;
+        });
+        return;
+      }
+      setState(() {
+        _error = 'Не удалось сохранить: ${e.message}';
+        _saving = false;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
