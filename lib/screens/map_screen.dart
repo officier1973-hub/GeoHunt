@@ -18,6 +18,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
 
+  // ✅ A3: подписка на других охотников группы
+  StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
+  List<Map<String, dynamic>> _otherHunters = [];
+
   Geographic? _myPos;
   bool _locating = false;
   bool _firstFix = true;
@@ -28,7 +32,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   int _currentStyleIndex = 0;
 
-  // Троттлинг записи в БД: не чаще одного обновления в 3 секунды
   DateTime? _lastDbUpdate;
   static const _dbUpdateInterval = Duration(seconds: 3);
 
@@ -44,13 +47,41 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _startLocation();
+    _subscribeToGroupHunters();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
+    _huntersSub?.cancel();
     super.dispose();
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ A3: подписка на других охотников группы
+  // ---------------------------------------------------------------
+  void _subscribeToGroupHunters() {
+    final groupId = AppSession.groupId;
+    final myId = AppSession.hunterId;
+    if (groupId == null || myId == null) return;
+
+    _huntersSub?.cancel();
+    _huntersSub = Supabase.instance.client
+        .from('hunters')
+        .stream(primaryKey: ['id'])
+        .eq('group_id', groupId)
+        .listen((rows) {
+      final others = rows
+          .where((r) => r['id'] != myId)
+          .where((r) => r['lat'] != null && r['lon'] != null)
+          .toList();
+      if (!mounted) return;
+      setState(() => _otherHunters = others);
+      _updateOthersLayer();
+    }, onError: (e) {
+      debugPrint('Ошибка подписки на охотников: $e');
+    });
   }
 
   @override
@@ -168,9 +199,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _locating = false;
     });
 
-    // ✅ A2: записываем позицию в Supabase (с троттлингом)
     await _updateMyPositionInDb(newPos);
-
     await _updateUserLocationLayer();
 
     if (_firstFix && _mapCtrl != null) {
@@ -200,14 +229,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ A2: запись своей позиции в таблицу hunters
-  // ---------------------------------------------------------------
   Future<void> _updateMyPositionInDb(Geographic pos) async {
     final hunterId = AppSession.hunterId;
     if (hunterId == null) return;
 
-    // Троттлинг: не чаще одного обновления в 3 секунды
     final now = DateTime.now();
     if (_lastDbUpdate != null &&
         now.difference(_lastDbUpdate!) < _dbUpdateInterval) {
@@ -222,7 +247,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', hunterId);
     } catch (e) {
-      // Не критично: при потере сети просто пропускаем обновление
       debugPrint('Не удалось обновить позицию в БД: $e');
     }
   }
@@ -293,6 +317,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     await _updateUserLocationLayer();
+    await _updateOthersLayer(); // ✅ A3: перерисовать чужих после смены стиля
   }
 
   Future<void> _updateUserLocationLayer() async {
@@ -334,6 +359,63 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await style.layers.add(circleLayer);
     } catch (e) {
       debugPrint('Ошибка обновления слоя пользователя: $e');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ A3: отрисовка чужих охотников одним GeoJsonSource
+  // ---------------------------------------------------------------
+  Future<void> _updateOthersLayer() async {
+    final style = _styleCtrl;
+    if (style == null) return;
+
+    try {
+      try {
+        await style.layers.remove('others_layer');
+      } catch (_) {}
+      try {
+        await style.sources.remove('others_source');
+      } catch (_) {}
+
+      if (_otherHunters.isEmpty) return;
+
+      final features = _otherHunters.map((h) {
+        return {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [h['lon'], h['lat']],
+          },
+          'properties': {
+            'name': h['name'],
+            'color': h['color'] ?? '#1976D2',
+          },
+        };
+      }).toList();
+
+      final featureCollection = {
+        'type': 'FeatureCollection',
+        'features': features,
+      };
+
+      const sourceId = 'others_source';
+      final source = GeoJsonSource.data(
+        id: sourceId,
+        data: GeoJsonData.text(jsonEncode(featureCollection)),
+      );
+      await style.sources.add(source);
+
+      final layer = CircleStyleLayer(
+        id: 'others_layer',
+        sourceId: sourceId,
+        color: Expression.get('color').convertToColor(),
+        radius: Expression.literal(9),
+        strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
+        strokeWidth: Expression.literal(2),
+      );
+      await style.layers.add(layer);
+    } catch (e) {
+      debugPrint('Ошибка обновления слоя других охотников: $e');
     }
   }
 
