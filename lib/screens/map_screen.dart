@@ -25,9 +25,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _otherHunters = [];
 
   Geographic? _myPos;
-  double? _myBearing;       // итоговое направление стрелки
-  double? _compassHeading;  // от магнитометра
-  double? _gpsHeading;      // от GPS (фолбэк)
+  double? _myBearing;
+  double? _compassHeading;
+  double? _gpsHeading;
 
   bool _locating = false;
   bool _firstFix = true;
@@ -40,6 +40,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   DateTime? _lastDbUpdate;
   static const _dbUpdateInterval = Duration(seconds: 3);
+
+  // ✅ Debounce компаса: не чаще 10 раз в секунду
+  DateTime? _lastBearingUpdate;
+  static const _bearingUpdateInterval = Duration(milliseconds: 100);
+
+  // ✅ Флаг: слой пользователя уже создан в текущем стиле
+  bool _userLayerReady = false;
+
+  // ✅ Сериализация обновлений слоя пользователя
+  bool _userUpdateInProgress = false;
+  bool _userUpdatePending = false;
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -66,9 +77,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Магнитометр (направление «куда смотрю»)
-  // ---------------------------------------------------------------
   void _startCompass() {
     _compassSub?.cancel();
     _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
@@ -81,12 +89,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _applyBearing() {
-    // Приоритет: магнитометр → GPS heading
     final bearing = _compassHeading ?? _gpsHeading;
-    if (bearing != null) {
-      _myBearing = bearing;
-      _updateUserLocationLayer();
+    if (bearing == null) return;
+
+    // ✅ Debounce: не чаще одного обновления за 100 мс
+    final now = DateTime.now();
+    if (_lastBearingUpdate != null &&
+        now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
+      return;
     }
+    _lastBearingUpdate = now;
+
+    _myBearing = bearing;
+    _updateUserLocationLayer();
   }
 
   void _subscribeToGroupHunters() {
@@ -301,8 +316,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
 
-    // ✅ Всегда перезагружаем иконку стрелки после смены стиля
-    // (addImage нужно вызывать заново для каждого нового стиля)
+    // ✅ Сброс состояния слоя пользователя после смены стиля
+    _userLayerReady = false;
+    _userUpdateInProgress = false;
+    _userUpdatePending = false;
+    _lastBearingUpdate = null; // чтобы первый апдейт стрелки прошёл сразу
+
+    // ✅ Всегда перезагружаем иконку после каждого `_onStyleLoaded`
     try {
       final bytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', bytes.buffer.asUint8List());
@@ -372,54 +392,67 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _updateOthersLayer();
   }
 
+  // ---------------------------------------------------------------
+  // ✅ Обновление слоя пользователя:
+  //    - слой создаётся один раз (_userLayerReady)
+  //    - при обновлениях удаляется/добавляется только источник
+  //    - вызовы сериализованы
+  // ---------------------------------------------------------------
   Future<void> _updateUserLocationLayer() async {
     final style = _styleCtrl;
     final pos = _myPos;
     if (style == null || pos == null) return;
 
+    if (_userUpdateInProgress) {
+      _userUpdatePending = true;
+      return;
+    }
+    _userUpdateInProgress = true;
+
     try {
-      try {
-        await style.layers.remove('user_location_layer');
-      } catch (_) {}
-      try {
-        await style.sources.remove('user_location_source');
-      } catch (_) {}
-
-      const sourceId = 'user_location_source';
       final bearing = _myBearing ?? 0.0;
-
-      final geoJsonMap = {
+      final geoJsonData = GeoJsonData.text(jsonEncode({
         'type': 'Feature',
         'geometry': {
           'type': 'Point',
           'coordinates': [pos.lon, pos.lat],
         },
-        'properties': {
-          'bearing': bearing,
-        },
-      };
-      final geoJsonSource = GeoJsonSource.data(
-        id: sourceId,
-        data: GeoJsonData.text(jsonEncode(geoJsonMap)),
-      );
-      await style.sources.add(geoJsonSource);
+        'properties': {'bearing': bearing},
+      }));
 
-      // Всегда пробуем добавить SymbolStyleLayer.
-      // Если изображение по какой-то причине не загрузилось —
-      // MapLibre просто не нарисует иконку, но слой не сломается.
-      final symbolLayer = SymbolStyleLayer(
-        id: 'user_location_layer',
-        sourceId: sourceId,
-        iconImage: Expression.literal('user_arrow'),
-        iconSize: Expression.literal(1.0),
-        iconRotate: Expression.get('bearing').asNumber(),
-        iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
-        iconAllowOverlap: Expression.literal(true),
-        iconIgnorePlacement: Expression.literal(true),
-      );
-      await style.layers.add(symbolLayer);
+      // Удаляем только источник — слой остаётся в стиле
+      try {
+        await style.sources.remove('user_location_source');
+      } catch (_) {}
+
+      await style.sources.add(GeoJsonSource.data(
+        id: 'user_location_source',
+        data: geoJsonData,
+      ));
+
+      // Слой создаём только один раз (или после смены стиля)
+      if (!_userLayerReady) {
+        await style.layers.add(SymbolStyleLayer(
+          id: 'user_location_layer',
+          sourceId: 'user_location_source',
+          iconImage: Expression.literal('user_arrow'),
+          iconSize: Expression.literal(1.0),
+          iconRotate: Expression.get('bearing').asNumber(),
+          iconRotationAlignment:
+              Expression.literal(IconRotationAlignment.map),
+          iconAllowOverlap: Expression.literal(true),
+          iconIgnorePlacement: Expression.literal(true),
+        ));
+        _userLayerReady = true;
+      }
     } catch (e) {
       debugPrint('Ошибка обновления слоя пользователя: $e');
+    } finally {
+      _userUpdateInProgress = false;
+      if (_userUpdatePending) {
+        _userUpdatePending = false;
+        _updateUserLocationLayer();
+      }
     }
   }
 
