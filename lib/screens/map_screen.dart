@@ -48,10 +48,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _userUpdateInProgress = false;
   bool _userUpdatePending = false;
 
-  // ✅ Порог «свежести»: после 1 часа точка становится серой
   static const _staleThreshold = Duration(hours: 1);
-
-  // ✅ Heartbeat: обновляем updated_at раз в 15 минут
   static const _heartbeatInterval = Duration(minutes: 15);
 
   Timer? _heartbeatTimer;
@@ -81,6 +78,47 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ---------------------------------------------------------------
+  // ✅ Надёжный парсинг updated_at
+  //    Supabase хранит timestamptz как UTC. Но некоторые версии
+  //    PostgREST могут вернуть строку без 'Z'/'+00:00', и тогда
+  //    DateTime.tryParse трактует её как ЛОКАЛЬНОЕ время. Чтобы
+  //    этого избежать — принудительно добавляем 'Z', если
+  //    таймзона в строке не указана.
+  // ---------------------------------------------------------------
+  DateTime? _parseUpdatedAt(dynamic raw) {
+    if (raw == null) return null;
+    final s = raw.toString().trim();
+    if (s.isEmpty) return null;
+
+    // Есть ли в строке явная таймзона?
+    // - 'Z' в конце
+    // - '+HH:MM' или '+HHMM' в конце (после 'T' или пробела)
+    // - '-HH:MM' в конце (но не путать с датой 'YYYY-MM-DD')
+    final hasTz = s.endsWith('Z') ||
+        RegExp(r'[+\-]\d{2}:?\d{2}$').hasMatch(s) ||
+        RegExp(r'[+\-]\d{2}$').hasMatch(s.substring(s.length > 3 ? s.length - 3 : 0));
+
+    final normalized = hasTz ? s : '${s}Z';
+    final dt = DateTime.tryParse(normalized);
+    if (dt == null) {
+      debugPrint('⚠️ Не удалось распарсить updated_at: "$raw"');
+      return null;
+    }
+    return dt.toUtc();
+  }
+
+  // ✅ Точный формат возраста: «5 мин», «1 ч», «1 ч 25 м», «3 дн»
+  String _formatAge(Duration age) {
+    if (age.inDays >= 1) return '${age.inDays} дн';
+    if (age.inHours >= 1) {
+      final m = age.inMinutes % 60;
+      return m > 0 ? '${age.inHours} ч ${m} м' : '${age.inHours} ч';
+    }
+    if (age.inMinutes >= 1) return '${age.inMinutes} мин';
+    return 'меньше минуты';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -103,10 +141,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Heartbeat: обновляем updated_at каждые 15 минут,
-  //    даже если охотник стоит на месте (нет GPS-событий).
-  // ---------------------------------------------------------------
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer =
@@ -125,10 +159,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Раз в минуту пересчитываем «свежесть» маркеров других
-  //    (realtime не сработает, если чужая строка не меняется).
-  // ---------------------------------------------------------------
   void _startFreshnessTimer() {
     _freshnessTimer?.cancel();
     _freshnessTimer = Timer.periodic(const Duration(seconds: 60), (_) {
@@ -189,7 +219,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _rememberCamera();
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        // ✅ При возврате в приложение: пересчитываем свежесть,
+        //    отправляем heartbeat, обновляем слой.
+        _updateOthersLayer();
+        _sendHeartbeat();
+      }
     }
   }
 
@@ -504,9 +540,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Свежесть: цвет и подпись зависят от updated_at
-  // ---------------------------------------------------------------
   Future<void> _updateOthersLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
@@ -528,11 +561,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       final features = _otherHunters.map((h) {
         final name = (h['name'] ?? '').toString();
-        final updatedAtRaw = h['updated_at'];
-        final dt = updatedAtRaw != null
-            ? DateTime.tryParse(updatedAtRaw.toString())
-            : null;
-        final age = dt != null ? now.difference(dt.toUtc()) : null;
+        final raw = h['updated_at'];
+        final dt = _parseUpdatedAt(raw);
+        final age = dt != null ? now.difference(dt) : null;
 
         final isStale = age != null && age > _staleThreshold;
 
@@ -541,13 +572,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         String label = name;
         if (age != null && age > const Duration(minutes: 5)) {
-          if (age.inMinutes < 60) {
-            label = '$name · ${age.inMinutes} мин';
-          } else if (age.inHours < 24) {
-            label = '$name · ${age.inHours} ч';
-          } else {
-            label = '$name · ${age.inDays} дн';
-          }
+          label = '$name · ${_formatAge(age)}';
+        }
+
+        // ✅ Диагностика: для «старых» выводим сырое значение и возраст
+        if (isStale) {
+          debugPrint('🕒 $name: updated_at="$raw" → age=${_formatAge(age!)}');
         }
 
         return {
