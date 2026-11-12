@@ -18,7 +18,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
 
-  // ✅ A3: подписка на других охотников группы
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
 
@@ -58,9 +57,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ A3: подписка на других охотников группы
-  // ---------------------------------------------------------------
   void _subscribeToGroupHunters() {
     final groupId = AppSession.groupId;
     final myId = AppSession.hunterId;
@@ -131,6 +127,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     );
     if (confirmed != true) return;
+
+    // ✅ Удаляем свою строку из hunters, чтобы освободить имя и убрать точку с карты
+    final hunterId = AppSession.hunterId;
+    if (hunterId != null) {
+      try {
+        await Supabase.instance.client
+            .from('hunters')
+            .delete()
+            .eq('id', hunterId);
+      } catch (e) {
+        debugPrint('Не удалось удалить охотника при выходе: $e');
+      }
+    }
+
     await AppSession.clear();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -317,7 +327,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
 
     await _updateUserLocationLayer();
-    await _updateOthersLayer(); // ✅ A3: перерисовать чужих после смены стиля
+    await _updateOthersLayer();
   }
 
   Future<void> _updateUserLocationLayer() async {
@@ -362,9 +372,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ A3: отрисовка чужих охотников одним GeoJsonSource
-  // ---------------------------------------------------------------
   Future<void> _updateOthersLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
