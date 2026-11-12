@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:flutter_compass/flutter_compass.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_session.dart';
 import 'home_screen.dart';
@@ -18,12 +19,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapController? _mapCtrl;
   StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
+  StreamSubscription<CompassEvent>? _compassSub;
 
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
 
   Geographic? _myPos;
-  double? _myBearing;
+  double? _myBearing;       // итоговое направление стрелки
+  double? _compassHeading;  // от магнитометра
+  double? _gpsHeading;      // от GPS (фолбэк)
+
   bool _locating = false;
   bool _firstFix = true;
   bool _pendingCenter = false;
@@ -35,8 +40,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   DateTime? _lastDbUpdate;
   static const _dbUpdateInterval = Duration(seconds: 3);
-
-  bool _arrowImageLoaded = false;
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -50,6 +53,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _startLocation();
+    _startCompass();
     _subscribeToGroupHunters();
   }
 
@@ -57,8 +61,32 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
+    _compassSub?.cancel();
     _huntersSub?.cancel();
     super.dispose();
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ Магнитометр (направление «куда смотрю»)
+  // ---------------------------------------------------------------
+  void _startCompass() {
+    _compassSub?.cancel();
+    _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
+      final h = event.heading;
+      if (h != null && h >= 0) {
+        _compassHeading = h;
+        _applyBearing();
+      }
+    });
+  }
+
+  void _applyBearing() {
+    // Приоритет: магнитометр → GPS heading
+    final bearing = _compassHeading ?? _gpsHeading;
+    if (bearing != null) {
+      _myBearing = bearing;
+      _updateUserLocationLayer();
+    }
   }
 
   void _subscribeToGroupHunters() {
@@ -207,16 +235,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onPosition(geo.Position pos) async {
     if (!mounted) return;
     final newPos = Geographic(lon: pos.longitude, lat: pos.latitude);
-    final bearing = pos.heading;
+    _gpsHeading = pos.heading;
 
     setState(() {
       _myPos = newPos;
-      _myBearing = bearing;
       _locating = false;
     });
 
+    _applyBearing();
     await _updateMyPositionInDb(newPos);
-    await _updateUserLocationLayer();
 
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
@@ -274,14 +301,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
 
-    if (!_arrowImageLoaded) {
-      try {
-        final bytes = await rootBundle.load('assets/icons/arrow.png');
-        await style.addImage('user_arrow', bytes.buffer.asUint8List());
-        _arrowImageLoaded = true;
-      } catch (e) {
-        debugPrint('Не удалось загрузить иконку стрелки: $e');
-      }
+    // ✅ Всегда перезагружаем иконку стрелки после смены стиля
+    // (addImage нужно вызывать заново для каждого нового стиля)
+    try {
+      final bytes = await rootBundle.load('assets/icons/arrow.png');
+      await style.addImage('user_arrow', bytes.buffer.asUint8List());
+    } catch (e) {
+      debugPrint('Не удалось загрузить иконку стрелки: $e');
     }
 
     if (_currentStyleIndex > 0) {
@@ -378,30 +404,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.sources.add(geoJsonSource);
 
-      if (_arrowImageLoaded) {
-        final symbolLayer = SymbolStyleLayer(
-          id: 'user_location_layer',
-          sourceId: sourceId,
-          iconImage: Expression.literal('user_arrow'),
-          iconSize: Expression.literal(1.0),
-          iconRotate: Expression.get('bearing').asNumber(),
-          // ✅ Оборачиваем enum в Expression.literal
-          iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
-          iconAllowOverlap: Expression.literal(true),
-          iconIgnorePlacement: Expression.literal(true),
-        );
-        await style.layers.add(symbolLayer);
-      } else {
-        final circleLayer = CircleStyleLayer(
-          id: 'user_location_layer',
-          sourceId: sourceId,
-          color: Expression.literal(const Color(0xFF2E7D32)),
-          radius: Expression.literal(10),
-          strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
-          strokeWidth: Expression.literal(2),
-        );
-        await style.layers.add(circleLayer);
-      }
+      // Всегда пробуем добавить SymbolStyleLayer.
+      // Если изображение по какой-то причине не загрузилось —
+      // MapLibre просто не нарисует иконку, но слой не сломается.
+      final symbolLayer = SymbolStyleLayer(
+        id: 'user_location_layer',
+        sourceId: sourceId,
+        iconImage: Expression.literal('user_arrow'),
+        iconSize: Expression.literal(1.0),
+        iconRotate: Expression.get('bearing').asNumber(),
+        iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
+        iconAllowOverlap: Expression.literal(true),
+        iconIgnorePlacement: Expression.literal(true),
+      );
+      await style.layers.add(symbolLayer);
     } catch (e) {
       debugPrint('Ошибка обновления слоя пользователя: $e');
     }
