@@ -50,9 +50,15 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
+      # ✅ Переименовываем APK перед загрузкой
+      - name: Rename APK
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             build/app/outputs/flutter-apk/GeoHunt-release.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: GeoHunt-release-apk   # имя артефакта в списке (можно любое)
+          path: build/app/outputs/flutter-apk/GeoHunt-release.apk
           retention-days: 7
