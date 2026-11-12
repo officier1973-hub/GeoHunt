@@ -23,7 +23,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _otherHunters = [];
 
   Geographic? _myPos;
-  double? _myBearing; // направление движения (heading из геолокатора)
+  double? _myBearing;
   bool _locating = false;
   bool _firstFix = true;
   bool _pendingCenter = false;
@@ -61,9 +61,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ---------------------------------------------------------------
-  // Подписка на других охотников (без изменений)
-  // ---------------------------------------------------------------
   void _subscribeToGroupHunters() {
     final groupId = AppSession.groupId;
     final myId = AppSession.hunterId;
@@ -210,7 +207,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onPosition(geo.Position pos) async {
     if (!mounted) return;
     final newPos = Geographic(lon: pos.longitude, lat: pos.latitude);
-    final bearing = pos.heading; // направление движения в градусах (0 = север)
+    final bearing = pos.heading;
 
     setState(() {
       _myPos = newPos;
@@ -219,7 +216,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
 
     await _updateMyPositionInDb(newPos);
-    await _updateUserLocationLayer(); // теперь это стрелка, а не круг
+    await _updateUserLocationLayer();
 
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
@@ -277,7 +274,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
 
-    // Загружаем иконку стрелки один раз после загрузки стиля
     if (!_arrowImageLoaded) {
       try {
         final bytes = await rootBundle.load('assets/icons/arrow.png');
@@ -350,9 +346,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _updateOthersLayer();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Индикатор направления: SymbolStyleLayer со стрелкой
-  // ---------------------------------------------------------------
   Future<void> _updateUserLocationLayer() async {
     final style = _styleCtrl;
     final pos = _myPos;
@@ -367,7 +360,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } catch (_) {}
 
       const sourceId = 'user_location_source';
-      final bearing = _myBearing ?? 0.0; // если heading нет, стрелка смотрит на север
+      final bearing = _myBearing ?? 0.0;
 
       final geoJsonMap = {
         'type': 'Feature',
@@ -385,15 +378,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.sources.add(geoJsonSource);
 
-      // Если иконка не загрузилась — используем круг как фолбэк
       if (_arrowImageLoaded) {
         final symbolLayer = SymbolStyleLayer(
           id: 'user_location_layer',
           sourceId: sourceId,
           iconImage: Expression.literal('user_arrow'),
           iconSize: Expression.literal(1.0),
-          iconRotate: Expression.get('bearing'), // поворот по направлению
-          iconRotationAlignment: Expression.literal('map'), // вращается вместе с картой
+          iconRotate: Expression.get('bearing').asNumber(), // ✅ приведение к num
+          iconRotationAlignment: IconRotationAlignment.map, // ✅ enum, не строка
           iconAllowOverlap: Expression.literal(true),
           iconIgnorePlacement: Expression.literal(true),
         );
@@ -544,7 +536,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onCameraMoveEnd: _onCameraMoveEnd,
         layers: _buildLayers(),
         children: const [
-          MapCompass(), // ✅ встроенный компас maplibre
+          MapCompass(),
         ],
       ),
       floatingActionButton: FloatingActionButton(
