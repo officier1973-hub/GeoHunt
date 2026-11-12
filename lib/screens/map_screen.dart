@@ -39,18 +39,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _currentStyleIndex = 0;
 
   DateTime? _lastDbUpdate;
-  static const _dbUpdateInterval = Duration(seconds: 3);
+  static const _dbUpdateInterval = Duration(seconds: 30);
 
-  // ✅ Debounce компаса: не чаще 10 раз в секунду
   DateTime? _lastBearingUpdate;
   static const _bearingUpdateInterval = Duration(milliseconds: 100);
 
-  // ✅ Флаг: слой пользователя уже создан в текущем стиле
   bool _userLayerReady = false;
-
-  // ✅ Сериализация обновлений слоя пользователя
   bool _userUpdateInProgress = false;
   bool _userUpdatePending = false;
+
+  // ✅ Порог «свежести»: после 1 часа точка становится серой
+  static const _staleThreshold = Duration(hours: 1);
+
+  // ✅ Heartbeat: обновляем updated_at раз в 15 минут
+  static const _heartbeatInterval = Duration(minutes: 15);
+
+  Timer? _heartbeatTimer;
+  Timer? _freshnessTimer;
+
+  static const double _labelsMinZoom = 12;
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -59,6 +66,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
 
+  String _roleLabel(String? role) {
+    switch (role) {
+      case 'shooter':
+        return 'стрелок';
+      case 'driver':
+        return 'загонщик';
+      case 'ranger':
+        return 'егерь';
+      case 'none':
+        return '';
+      default:
+        return '';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +88,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _startLocation();
     _startCompass();
     _subscribeToGroupHunters();
+    _startHeartbeat();
+    _startFreshnessTimer();
   }
 
   @override
@@ -74,7 +98,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _posSub?.cancel();
     _compassSub?.cancel();
     _huntersSub?.cancel();
+    _heartbeatTimer?.cancel();
+    _freshnessTimer?.cancel();
     super.dispose();
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ Heartbeat: обновляем updated_at каждые 15 минут,
+  //    даже если охотник стоит на месте (нет GPS-событий).
+  // ---------------------------------------------------------------
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer =
+        Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
+  }
+
+  Future<void> _sendHeartbeat() async {
+    final hunterId = AppSession.hunterId;
+    if (hunterId == null) return;
+    try {
+      await Supabase.instance.client.from('hunters').update({
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', hunterId);
+    } catch (e) {
+      debugPrint('Heartbeat error: $e');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // ✅ Раз в минуту пересчитываем «свежесть» маркеров других
+  //    (realtime не сработает, если чужая строка не меняется).
+  // ---------------------------------------------------------------
+  void _startFreshnessTimer() {
+    _freshnessTimer?.cancel();
+    _freshnessTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (mounted) _updateOthersLayer();
+    });
   }
 
   void _startCompass() {
@@ -92,7 +151,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final bearing = _compassHeading ?? _gpsHeading;
     if (bearing == null) return;
 
-    // ✅ Debounce: не чаще одного обновления за 100 мс
     final now = DateTime.now();
     if (_lastBearingUpdate != null &&
         now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
@@ -316,13 +374,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
 
-    // ✅ Сброс состояния слоя пользователя после смены стиля
     _userLayerReady = false;
     _userUpdateInProgress = false;
     _userUpdatePending = false;
-    _lastBearingUpdate = null; // чтобы первый апдейт стрелки прошёл сразу
+    _lastBearingUpdate = null;
 
-    // ✅ Всегда перезагружаем иконку после каждого `_onStyleLoaded`
     try {
       final bytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', bytes.buffer.asUint8List());
@@ -392,12 +448,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _updateOthersLayer();
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Обновление слоя пользователя:
-  //    - слой создаётся один раз (_userLayerReady)
-  //    - при обновлениях удаляется/добавляется только источник
-  //    - вызовы сериализованы
-  // ---------------------------------------------------------------
   Future<void> _updateUserLocationLayer() async {
     final style = _styleCtrl;
     final pos = _myPos;
@@ -420,7 +470,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         'properties': {'bearing': bearing},
       }));
 
-      // Удаляем только источник — слой остаётся в стиле
       try {
         await style.sources.remove('user_location_source');
       } catch (_) {}
@@ -430,7 +479,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         data: geoJsonData,
       ));
 
-      // Слой создаём только один раз (или после смены стиля)
       if (!_userLayerReady) {
         await style.layers.add(SymbolStyleLayer(
           id: 'user_location_layer',
@@ -456,6 +504,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ---------------------------------------------------------------
+  // ✅ Свежесть: цвет и подпись зависят от updated_at
+  // ---------------------------------------------------------------
   Future<void> _updateOthersLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
@@ -473,7 +524,32 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       if (_otherHunters.isEmpty) return;
 
+      final now = DateTime.now().toUtc();
+
       final features = _otherHunters.map((h) {
+        final name = (h['name'] ?? '').toString();
+        final updatedAtRaw = h['updated_at'];
+        final dt = updatedAtRaw != null
+            ? DateTime.tryParse(updatedAtRaw.toString())
+            : null;
+        final age = dt != null ? now.difference(dt.toUtc()) : null;
+
+        final isStale = age != null && age > _staleThreshold;
+
+        String color =
+            isStale ? '#9E9E9E' : (h['color'] ?? '#1976D2').toString();
+
+        String label = name;
+        if (age != null && age > const Duration(minutes: 5)) {
+          if (age.inMinutes < 60) {
+            label = '$name · ${age.inMinutes} мин';
+          } else if (age.inHours < 24) {
+            label = '$name · ${age.inHours} ч';
+          } else {
+            label = '$name · ${age.inDays} дн';
+          }
+        }
+
         return {
           'type': 'Feature',
           'geometry': {
@@ -481,8 +557,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             'coordinates': [h['lon'], h['lat']],
           },
           'properties': {
-            'name': h['name'],
-            'color': h['color'] ?? '#1976D2',
+            'name': name,
+            'color': color,
+            'label': label,
           },
         };
       }).toList();
@@ -512,7 +589,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final labelsLayer = SymbolStyleLayer(
         id: 'others_labels_layer',
         sourceId: sourceId,
-        textField: Expression.get('name').asString(),
+        textField: Expression.get('label').asString(),
         textSize: Expression.literal(12),
         textColor: Expression.literal(const Color(0xFFFFFFFF)),
         textHaloColor: Expression.literal(const Color(0xFF000000)),
@@ -520,7 +597,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textFont: Expression.literal(const ['Noto Sans Regular']),
         textAllowOverlap: Expression.literal(false),
         textOffset: Expression.literal(const Offset(0, -1.2)),
-        minZoom: 12,
+        minZoom: _labelsMinZoom,
       );
       await style.layers.add(labelsLayer);
     } catch (e) {
@@ -542,6 +619,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         const Geographic(lon: 37.618423, lat: 55.751244);
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
 
+    final myRole = _roleLabel(AppSession.hunterRole);
+    final myTitle = myRole.isEmpty
+        ? (AppSession.hunterName ?? '')
+        : '${AppSession.hunterName ?? ''} · $myRole';
+
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -553,7 +635,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               style: const TextStyle(fontSize: 13),
             ),
             Text(
-              AppSession.hunterName ?? '',
+              myTitle,
               style: const TextStyle(
                   fontSize: 16, fontWeight: FontWeight.bold),
             ),
