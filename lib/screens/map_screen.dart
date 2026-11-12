@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -22,6 +23,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Map<String, dynamic>> _otherHunters = [];
 
   Geographic? _myPos;
+  double? _myBearing; // направление движения (heading из геолокатора)
   bool _locating = false;
   bool _firstFix = true;
   bool _pendingCenter = false;
@@ -33,6 +35,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   DateTime? _lastDbUpdate;
   static const _dbUpdateInterval = Duration(seconds: 3);
+
+  bool _arrowImageLoaded = false;
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -57,6 +61,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  // ---------------------------------------------------------------
+  // Подписка на других охотников (без изменений)
+  // ---------------------------------------------------------------
   void _subscribeToGroupHunters() {
     final groupId = AppSession.groupId;
     final myId = AppSession.hunterId;
@@ -203,13 +210,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onPosition(geo.Position pos) async {
     if (!mounted) return;
     final newPos = Geographic(lon: pos.longitude, lat: pos.latitude);
+    final bearing = pos.heading; // направление движения в градусах (0 = север)
+
     setState(() {
       _myPos = newPos;
+      _myBearing = bearing;
       _locating = false;
     });
 
     await _updateMyPositionInDb(newPos);
-    await _updateUserLocationLayer();
+    await _updateUserLocationLayer(); // теперь это стрелка, а не круг
 
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
@@ -266,6 +276,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
+
+    // Загружаем иконку стрелки один раз после загрузки стиля
+    if (!_arrowImageLoaded) {
+      try {
+        final bytes = await rootBundle.load('assets/icons/arrow.png');
+        await style.addImage('user_arrow', bytes.buffer.asUint8List());
+        _arrowImageLoaded = true;
+      } catch (e) {
+        debugPrint('Не удалось загрузить иконку стрелки: $e');
+      }
+    }
 
     if (_currentStyleIndex > 0) {
       try {
@@ -329,6 +350,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _updateOthersLayer();
   }
 
+  // ---------------------------------------------------------------
+  // ✅ Индикатор направления: SymbolStyleLayer со стрелкой
+  // ---------------------------------------------------------------
   Future<void> _updateUserLocationLayer() async {
     final style = _styleCtrl;
     final pos = _myPos;
@@ -343,13 +367,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } catch (_) {}
 
       const sourceId = 'user_location_source';
+      final bearing = _myBearing ?? 0.0; // если heading нет, стрелка смотрит на север
+
       final geoJsonMap = {
         'type': 'Feature',
         'geometry': {
           'type': 'Point',
           'coordinates': [pos.lon, pos.lat],
         },
-        'properties': <String, dynamic>{},
+        'properties': {
+          'bearing': bearing,
+        },
       };
       final geoJsonSource = GeoJsonSource.data(
         id: sourceId,
@@ -357,15 +385,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       await style.sources.add(geoJsonSource);
 
-      final circleLayer = CircleStyleLayer(
-        id: 'user_location_layer',
-        sourceId: sourceId,
-        color: Expression.literal(const Color(0xFF2E7D32)),
-        radius: Expression.literal(10),
-        strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
-        strokeWidth: Expression.literal(2),
-      );
-      await style.layers.add(circleLayer);
+      // Если иконка не загрузилась — используем круг как фолбэк
+      if (_arrowImageLoaded) {
+        final symbolLayer = SymbolStyleLayer(
+          id: 'user_location_layer',
+          sourceId: sourceId,
+          iconImage: Expression.literal('user_arrow'),
+          iconSize: Expression.literal(1.0),
+          iconRotate: Expression.get('bearing'), // поворот по направлению
+          iconRotationAlignment: Expression.literal('map'), // вращается вместе с картой
+          iconAllowOverlap: Expression.literal(true),
+          iconIgnorePlacement: Expression.literal(true),
+        );
+        await style.layers.add(symbolLayer);
+      } else {
+        final circleLayer = CircleStyleLayer(
+          id: 'user_location_layer',
+          sourceId: sourceId,
+          color: Expression.literal(const Color(0xFF2E7D32)),
+          radius: Expression.literal(10),
+          strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
+          strokeWidth: Expression.literal(2),
+        );
+        await style.layers.add(circleLayer);
+      }
     } catch (e) {
       debugPrint('Ошибка обновления слоя пользователя: $e');
     }
@@ -427,14 +470,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final labelsLayer = SymbolStyleLayer(
         id: 'others_labels_layer',
         sourceId: sourceId,
-        textField: Expression.get('name').asString(), // ✅ приведение к String
+        textField: Expression.get('name').asString(),
         textSize: Expression.literal(12),
         textColor: Expression.literal(const Color(0xFFFFFFFF)),
         textHaloColor: Expression.literal(const Color(0xFF000000)),
         textHaloWidth: Expression.literal(2),
         textFont: Expression.literal(const ['Noto Sans Regular']),
         textAllowOverlap: Expression.literal(false),
-        textOffset: Expression.literal(const Offset(0, -1.2)), // ✅ Offset вместо List
+        textOffset: Expression.literal(const Offset(0, -1.2)),
         minZoom: 12,
       );
       await style.layers.add(labelsLayer);
@@ -500,6 +543,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onStyleLoaded: _onStyleLoaded,
         onCameraMoveEnd: _onCameraMoveEnd,
         layers: _buildLayers(),
+        children: const [
+          MapCompass(), // ✅ встроенный компас maplibre
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _centerOnMe,
