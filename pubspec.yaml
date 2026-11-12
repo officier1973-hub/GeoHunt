@@ -9,10 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  maplibre: ^0.4.0-pre.2   # 👈 новый пакет вместо maplibre_gl
+  maplibre: ^0.4.0-pre.2
   geolocator: ^14.0.0
   path_provider: ^2.1.3
   cupertino_icons: ^1.0.6
+  supabase_flutter: ^2.8.0
+  shared_preferences: ^2.3.0
 
 flutter:
   uses-material-design: true
