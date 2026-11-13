@@ -6,6 +6,7 @@ import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:audioplayers/audioplayers.dart'; // ✅ Новый импорт
 import '../app_session.dart';
 import 'home_screen.dart';
 
@@ -50,11 +51,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   static const _staleThreshold = Duration(hours: 1);
   static const _heartbeatInterval = Duration(minutes: 15);
+  static const _cleanupInterval = Duration(hours: 1);
 
   Timer? _heartbeatTimer;
   Timer? _freshnessTimer;
+  Timer? _cleanupTimer;
 
   static const double _labelsMinZoom = 12;
+
+  // ✅ E1: Аудиоплеер для событий
+  final AudioPlayer _audioPlayer = AudioPlayer();
 
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
@@ -65,50 +71,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   String _roleLabel(String? role) {
     switch (role) {
-      case 'shooter':
-        return 'стрелок';
-      case 'driver':
-        return 'загонщик';
-      case 'ranger':
-        return 'егерь';
-      case 'none':
-        return '';
-      default:
-        return '';
+      case 'shooter': return 'стрелок';
+      case 'driver': return 'загонщик';
+      case 'ranger': return 'егерь';
+      case 'none': return '';
+      default: return '';
     }
   }
 
-  // ---------------------------------------------------------------
-  // ✅ Надёжный парсинг updated_at
-  //    Supabase хранит timestamptz как UTC. Но некоторые версии
-  //    PostgREST могут вернуть строку без 'Z'/'+00:00', и тогда
-  //    DateTime.tryParse трактует её как ЛОКАЛЬНОЕ время. Чтобы
-  //    этого избежать — принудительно добавляем 'Z', если
-  //    таймзона в строке не указана.
-  // ---------------------------------------------------------------
   DateTime? _parseUpdatedAt(dynamic raw) {
     if (raw == null) return null;
     final s = raw.toString().trim();
     if (s.isEmpty) return null;
-
-    // Есть ли в строке явная таймзона?
-    // - 'Z' в конце
-    // - '+HH:MM' или '+HHMM' в конце (после 'T' или пробела)
-    // - '-HH:MM' в конце (но не путать с датой 'YYYY-MM-DD')
     final hasTz = s.endsWith('Z') ||
         RegExp(r'[+\-]\d{2}:?\d{2}$').hasMatch(s) ||
         RegExp(r'[+\-]\d{2}$').hasMatch(s.substring(s.length > 3 ? s.length - 3 : 0));
-
     final normalized = hasTz ? s : '${s}Z';
     final dt = DateTime.tryParse(normalized);
-    if (dt == null) {
-      debugPrint('⚠️ Не удалось распарсить updated_at: "$raw"');
-      return null;
-    }
-    return dt.toUtc();
+    return dt?.toUtc();
   }
 
-  // ✅ Точный формат возраста: «5 мин», «1 ч», «1 ч 25 м», «3 дн»
   String _formatAge(Duration age) {
     if (age.inDays >= 1) return '${age.inDays} дн';
     if (age.inHours >= 1) {
@@ -123,11 +105,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // ✅ E1: Настраиваем аудиоплеер (звук в режиме "будильника", игнорируя беззвучный режим)
+    _audioPlayer.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.alarm,
+        audioFocus: AndroidAudioFocus.gainTransient,
+      ),
+    ));
+
     _startLocation();
     _startCompass();
     _subscribeToGroupHunters();
     _startHeartbeat();
     _startFreshnessTimer();
+    _startCleanupTimer();
+    _cleanupStaleData();
   }
 
   @override
@@ -138,13 +134,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _huntersSub?.cancel();
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
+    _cleanupTimer?.cancel();
+    _audioPlayer.dispose(); // ✅ Освобождаем ресурсы плеера
     super.dispose();
+  }
+
+  void _startCleanupTimer() {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(_cleanupInterval, (_) => _cleanupStaleData());
+  }
+
+  Future<void> _cleanupStaleData() async {
+    final groupId = AppSession.groupId;
+    final myId = AppSession.hunterId;
+    if (groupId == null) return;
+
+    try {
+      final supabase = Supabase.instance.client;
+      final hunterCutoff = DateTime.now().toUtc().subtract(const Duration(hours: 2)).toIso8601String();
+      var hunterQuery = supabase.from('hunters').delete().eq('group_id', groupId).lt('updated_at', hunterCutoff);
+      if (myId != null) hunterQuery = hunterQuery.neq('id', myId);
+      await hunterQuery;
+
+      final eventCutoff = DateTime.now().toUtc().subtract(const Duration(hours: 24)).toIso8601String();
+      await supabase.from('events').delete().eq('group_id', groupId).lt('created_at', eventCutoff);
+    } catch (e) {
+      debugPrint('Cleanup error: $e');
+    }
   }
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer =
-        Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
   }
 
   Future<void> _sendHeartbeat() async {
@@ -180,14 +201,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _applyBearing() {
     final bearing = _compassHeading ?? _gpsHeading;
     if (bearing == null) return;
-
     final now = DateTime.now();
-    if (_lastBearingUpdate != null &&
-        now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
-      return;
-    }
+    if (_lastBearingUpdate != null && now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) return;
     _lastBearingUpdate = now;
-
     _myBearing = bearing;
     _updateUserLocationLayer();
   }
@@ -210,9 +226,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _otherHunters = others);
       _updateOthersLayer();
-    }, onError: (e) {
-      debugPrint('Ошибка подписки на охотников: $e');
-    });
+    }, onError: (e) => debugPrint('Ошибка подписки на охотников: $e'));
   }
 
   @override
@@ -221,10 +235,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _rememberCamera();
       if (mounted) {
         setState(() {});
-        // ✅ При возврате в приложение: пересчитываем свежесть,
-        //    отправляем heartbeat, обновляем слой.
         _updateOthersLayer();
         _sendHeartbeat();
+        _cleanupStaleData();
       }
     }
   }
@@ -237,15 +250,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _onCameraMoveEnd(MapEventCameraMoveEnd event) {
-    _rememberCamera();
-  }
+  void _onCameraMoveEnd(MapEventCameraMoveEnd event) => _rememberCamera();
 
   void _cycleStyle() {
     _rememberCamera();
-    setState(() {
-      _currentStyleIndex = (_currentStyleIndex + 1) % _styleNames.length;
-    });
+    setState(() => _currentStyleIndex = (_currentStyleIndex + 1) % _styleNames.length);
   }
 
   Future<void> _logout() async {
@@ -253,17 +262,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Выйти из группы?'),
-        content: const Text(
-            'Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
+        content: const Text('Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Выйти'),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Выйти')),
         ],
       ),
     );
@@ -272,10 +274,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final hunterId = AppSession.hunterId;
     if (hunterId != null) {
       try {
-        await Supabase.instance.client
-            .from('hunters')
-            .delete()
-            .eq('id', hunterId);
+        await Supabase.instance.client.from('hunters').delete().eq('id', hunterId);
       } catch (e) {
         debugPrint('Не удалось удалить охотника при выходе: $e');
       }
@@ -283,10 +282,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     await AppSession.clear();
     if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
-      (_) => false,
-    );
+    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const HomeScreen()), (_) => false);
   }
 
   Future<void> _centerOnMe() async {
@@ -299,9 +295,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     await ctrl.animateCamera(
       CameraUpdate.position(center: pos, zoom: 15),
-      animation: CameraAnimation.fly(
-        duration: const Duration(milliseconds: 500),
-      ),
+      animation: CameraAnimation.fly(duration: const Duration(milliseconds: 500)),
     );
     _lastCenter = pos;
     _lastZoom = 15;
@@ -316,16 +310,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (mounted) setState(() => _locating = true);
     _posSub?.cancel();
     _posSub = geo.Geolocator.getPositionStream(
-      locationSettings: const geo.LocationSettings(
-        accuracy: geo.LocationAccuracy.high,
-        distanceFilter: 5,
-      ),
+      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high, distanceFilter: 5),
     ).listen(_onPosition);
     try {
       final cur = await geo.Geolocator.getCurrentPosition(
-        locationSettings: const geo.LocationSettings(
-          accuracy: geo.LocationAccuracy.high,
-        ),
+        locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high),
       );
       _onPosition(cur);
     } catch (_) {}
@@ -334,11 +323,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<bool> _ensurePermission() async {
     if (!await geo.Geolocator.isLocationServiceEnabled()) return false;
     var perm = await geo.Geolocator.checkPermission();
-    if (perm == geo.LocationPermission.denied) {
-      perm = await geo.Geolocator.requestPermission();
-    }
-    return perm == geo.LocationPermission.whileInUse ||
-        perm == geo.LocationPermission.always;
+    if (perm == geo.LocationPermission.denied) perm = await geo.Geolocator.requestPermission();
+    return perm == geo.LocationPermission.whileInUse || perm == geo.LocationPermission.always;
   }
 
   Future<void> _onPosition(geo.Position pos) async {
@@ -358,9 +344,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _firstFix = false;
       await _mapCtrl!.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
-        animation: CameraAnimation.fly(
-          duration: const Duration(milliseconds: 500),
-        ),
+        animation: CameraAnimation.fly(duration: const Duration(milliseconds: 500)),
       );
       _lastCenter = newPos;
       _lastZoom = 15;
@@ -372,9 +356,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _pendingCenter = false;
       await _mapCtrl!.animateCamera(
         CameraUpdate.position(center: newPos, zoom: 15),
-        animation: CameraAnimation.fly(
-          duration: const Duration(milliseconds: 500),
-        ),
+        animation: CameraAnimation.fly(duration: const Duration(milliseconds: 500)),
       );
       _lastCenter = newPos;
       _lastZoom = 15;
@@ -384,12 +366,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _updateMyPositionInDb(Geographic pos) async {
     final hunterId = AppSession.hunterId;
     if (hunterId == null) return;
-
     final now = DateTime.now();
-    if (_lastDbUpdate != null &&
-        now.difference(_lastDbUpdate!) < _dbUpdateInterval) {
-      return;
-    }
+    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < _dbUpdateInterval) return;
     _lastDbUpdate = now;
 
     try {
@@ -403,23 +381,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _onMapCreated(MapController ctrl) {
-    _mapCtrl = ctrl;
-  }
+  void _onMapCreated(MapController ctrl) => _mapCtrl = ctrl;
 
   Future<void> _onStyleLoaded(StyleController style) async {
     _styleCtrl = style;
-
     _userLayerReady = false;
     _userUpdateInProgress = false;
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
+    // ✅ E1: Загружаем иконки стрелки И СОБЫТИЙ в стиль карты
     try {
-      final bytes = await rootBundle.load('assets/icons/arrow.png');
-      await style.addImage('user_arrow', bytes.buffer.asUint8List());
+      final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
+      await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
+
+      final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
+      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List());
+
+      final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
+      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List());
+
+      final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
+      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List());
     } catch (e) {
-      debugPrint('Не удалось загрузить иконку стрелки: $e');
+      debugPrint('Не удалось загрузить иконки: $e');
     }
 
     if (_currentStyleIndex > 0) {
@@ -431,16 +416,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           tileSize: 256,
           minZoom: 0,
           maxZoom: 14,
-          attribution:
-              '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+          attribution: '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
         );
         await style.sources.add(rasterSource);
-
-        final rasterLayer = RasterStyleLayer(
-          id: 'satellite_layer',
-          sourceId: sourceId,
-        );
-        await style.layers.add(rasterLayer);
+        await style.layers.add(RasterStyleLayer(id: 'satellite_layer', sourceId: sourceId));
       } catch (e) {
         debugPrint('Ошибка добавления растрового слоя: $e');
       }
@@ -448,21 +427,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     if (_currentStyleIndex == 2) {
       try {
-        final roadsLayer = LineStyleLayer(
+        await style.layers.add(LineStyleLayer(
           id: 'roads_layer',
           sourceId: 'openmaptiles',
           sourceLayerId: 'streets',
           color: Expression.literal(const Color(0xFFFFFFFF)),
           width: Expression.literal(1.5),
           opacity: Expression.literal(0.8),
-        );
-        await style.layers.add(roadsLayer);
+        ));
       } catch (e) {
         debugPrint('Ошибка добавления слоя дорог: $e');
       }
 
       try {
-        final labelsLayer = SymbolStyleLayer(
+        await style.layers.add(SymbolStyleLayer(
           id: 'labels_layer',
           sourceId: 'openmaptiles',
           sourceLayerId: 'place',
@@ -473,8 +451,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           textHaloWidth: Expression.literal(1.8),
           textFont: Expression.literal(const ['Noto Sans Regular']),
           textAllowOverlap: Expression.literal(false),
-        );
-        await style.layers.add(labelsLayer);
+        ));
       } catch (e) {
         debugPrint('Ошибка добавления слоя подписей: $e');
       }
@@ -488,7 +465,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final style = _styleCtrl;
     final pos = _myPos;
     if (style == null || pos == null) return;
-
     if (_userUpdateInProgress) {
       _userUpdatePending = true;
       return;
@@ -510,10 +486,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         await style.sources.remove('user_location_source');
       } catch (_) {}
 
-      await style.sources.add(GeoJsonSource.data(
-        id: 'user_location_source',
-        data: geoJsonData,
-      ));
+      await style.sources.add(GeoJsonSource.data(id: 'user_location_source', data: geoJsonData));
 
       if (!_userLayerReady) {
         await style.layers.add(SymbolStyleLayer(
@@ -522,8 +495,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           iconImage: Expression.literal('user_arrow'),
           iconSize: Expression.literal(1.0),
           iconRotate: Expression.get('bearing').asNumber(),
-          iconRotationAlignment:
-              Expression.literal(IconRotationAlignment.map),
+          iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
           iconAllowOverlap: Expression.literal(true),
           iconIgnorePlacement: Expression.literal(true),
         ));
@@ -545,39 +517,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (style == null) return;
 
     try {
-      try {
-        await style.layers.remove('others_labels_layer');
-      } catch (_) {}
-      try {
-        await style.layers.remove('others_layer');
-      } catch (_) {}
-      try {
-        await style.sources.remove('others_source');
-      } catch (_) {}
+      try { await style.layers.remove('others_labels_layer'); } catch (_) {}
+      try { await style.layers.remove('others_layer'); } catch (_) {}
+      try { await style.sources.remove('others_source'); } catch (_) {}
 
       if (_otherHunters.isEmpty) return;
-
       final now = DateTime.now().toUtc();
 
       final features = _otherHunters.map((h) {
         final name = (h['name'] ?? '').toString();
-        final raw = h['updated_at'];
-        final dt = _parseUpdatedAt(raw);
+        final dt = _parseUpdatedAt(h['updated_at']);
         final age = dt != null ? now.difference(dt) : null;
-
         final isStale = age != null && age > _staleThreshold;
-
-        String color =
-            isStale ? '#9E9E9E' : (h['color'] ?? '#1976D2').toString();
-
+        String color = isStale ? '#9E9E9E' : (h['color'] ?? '#1976D2').toString();
         String label = name;
         if (age != null && age > const Duration(minutes: 5)) {
           label = '$name · ${_formatAge(age)}';
-        }
-
-        // ✅ Диагностика: для «старых» выводим сырое значение и возраст
-        if (isStale) {
-          debugPrint('🕒 $name: updated_at="$raw" → age=${_formatAge(age!)}');
         }
 
         return {
@@ -586,39 +541,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             'type': 'Point',
             'coordinates': [h['lon'], h['lat']],
           },
-          'properties': {
-            'name': name,
-            'color': color,
-            'label': label,
-          },
+          'properties': {'name': name, 'color': color, 'label': label},
         };
       }).toList();
 
-      final featureCollection = {
-        'type': 'FeatureCollection',
-        'features': features,
-      };
+      final featureCollection = {'type': 'FeatureCollection', 'features': features};
+      await style.sources.add(GeoJsonSource.data(id: 'others_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
-      const sourceId = 'others_source';
-      final source = GeoJsonSource.data(
-        id: sourceId,
-        data: GeoJsonData.text(jsonEncode(featureCollection)),
-      );
-      await style.sources.add(source);
-
-      final circleLayer = CircleStyleLayer(
+      await style.layers.add(CircleStyleLayer(
         id: 'others_layer',
-        sourceId: sourceId,
+        sourceId: 'others_source',
         color: Expression.get('color').convertToColor(),
         radius: Expression.literal(9),
         strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
         strokeWidth: Expression.literal(2),
-      );
-      await style.layers.add(circleLayer);
+      ));
 
-      final labelsLayer = SymbolStyleLayer(
+      await style.layers.add(SymbolStyleLayer(
         id: 'others_labels_layer',
-        sourceId: sourceId,
+        sourceId: 'others_source',
         textField: Expression.get('label').asString(),
         textSize: Expression.literal(12),
         textColor: Expression.literal(const Color(0xFFFFFFFF)),
@@ -628,8 +569,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textAllowOverlap: Expression.literal(false),
         textOffset: Expression.literal(const Offset(0, -1.2)),
         minZoom: _labelsMinZoom,
-      );
-      await style.layers.add(labelsLayer);
+      ));
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
     }
@@ -644,15 +584,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final center = _lastCenter ??
-        _myPos ??
-        const Geographic(lon: 37.618423, lat: 55.751244);
+    final center = _lastCenter ?? _myPos ?? const Geographic(lon: 37.618423, lat: 55.751244);
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
 
     final myRole = _roleLabel(AppSession.hunterRole);
-    final myTitle = myRole.isEmpty
-        ? (AppSession.hunterName ?? '')
-        : '${AppSession.hunterName ?? ''} · $myRole';
+    final myTitle = myRole.isEmpty ? (AppSession.hunterName ?? '') : '${AppSession.hunterName ?? ''} · $myRole';
 
     return Scaffold(
       appBar: AppBar(
@@ -660,25 +596,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'Группа ${AppSession.groupCode ?? ""}',
-              style: const TextStyle(fontSize: 13),
-            ),
-            Text(
-              myTitle,
-              style: const TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.bold),
-            ),
+            Text('Группа ${AppSession.groupCode ?? ""}', style: const TextStyle(fontSize: 13)),
+            Text(myTitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           ],
         ),
         actions: [
           TextButton.icon(
             onPressed: _cycleStyle,
             icon: const Icon(Icons.layers, color: Colors.white),
-            label: Text(
-              _styleNames[_currentStyleIndex],
-              style: const TextStyle(color: Colors.white),
-            ),
+            label: Text(_styleNames[_currentStyleIndex], style: const TextStyle(color: Colors.white)),
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -697,17 +623,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onStyleLoaded: _onStyleLoaded,
         onCameraMoveEnd: _onCameraMoveEnd,
         layers: _buildLayers(),
-        children: const [
-          MapCompass(),
-        ],
+        children: const [MapCompass()],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _locating ? null : _centerOnMe,
         child: _locating
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2))
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.gps_fixed),
       ),
     );
