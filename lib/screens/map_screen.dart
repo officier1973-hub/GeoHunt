@@ -447,19 +447,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
-    // ✅ SDF ВКЛЮЧЕН ДЛЯ СОБЫТИЙ (третий аргумент = true)
+    // ✅ Обычная загрузка иконок (без SDF)
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
       final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
-      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List(), true);
+      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List());
 
       final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
-      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List(), true);
+      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List());
 
       final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
-      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List(), true);
+      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List());
     } catch (e) {
       debugPrint('Не удалось загрузить иконки: $e');
     }
@@ -655,12 +655,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
       await style.sources.add(GeoJsonSource.data(id: 'events_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
-      // ✅ SDF ИКОНКИ БЕЛОГО ЦВЕТА
+      // ✅ Обычные иконки (без iconColor, чтобы не перекрашивать)
       await style.layers.add(SymbolStyleLayer(
         id: 'events_icons_layer', sourceId: 'events_source',
         iconImage: Expression.get('icon').asString(),
         iconSize: Expression.literal(0.6),
-        iconColor: Expression.literal(const Color(0xFFFFFFFF)), // Белый цвет для SDF
         iconAllowOverlap: Expression.literal(true), 
         iconIgnorePlacement: Expression.literal(true),
       ));
