@@ -157,13 +157,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     try {
       final supabase = Supabase.instance.client;
       
-      // Удаляем мертвых охотников (> 2 часов)
       final hunterCutoff = DateTime.now().toUtc().subtract(const Duration(hours: 2)).toIso8601String();
       var hunterQuery = supabase.from('hunters').delete().eq('group_id', groupId).lt('updated_at', hunterCutoff);
       if (myId != null) hunterQuery = hunterQuery.neq('id', myId);
       await hunterQuery;
 
-      // ✅ Удаляем старые события (> 7 дней)
       final eventCutoff = DateTime.now().toUtc().subtract(const Duration(days: 7)).toIso8601String();
       await supabase.from('events').delete().eq('group_id', groupId).lt('created_at', eventCutoff);
     } catch (e) {
@@ -194,7 +192,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           final id = row['id'] as String;
           if (!_seenEventIds.contains(id)) {
             _seenEventIds.add(id);
-            // ✅ Проверка: звук только если hunter_id не мой и не null (если null, считаем чужим для страховки)
             final authorId = row['hunter_id'];
             if (authorId != AppSession.hunterId) {
               _playEventSound(row['type'] as String);
@@ -450,18 +447,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
+    // ✅ SDF ВКЛЮЧЕН ДЛЯ СОБЫТИЙ
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
       final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
-      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List());
+      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List(), sdf: true);
 
       final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
-      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List());
+      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List(), sdf: true);
 
       final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
-      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List());
+      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List(), sdf: true);
     } catch (e) {
       debugPrint('Не удалось загрузить иконки: $e');
     }
@@ -657,10 +655,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
       await style.sources.add(GeoJsonSource.data(id: 'events_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
+      // ✅ SDF ИКОНКИ БЕЛОГО ЦВЕТА
       await style.layers.add(SymbolStyleLayer(
         id: 'events_icons_layer', sourceId: 'events_source',
         iconImage: Expression.get('icon').asString(),
         iconSize: Expression.literal(0.6),
+        iconColor: Expression.literal(const Color(0xFFFFFFFF)), // Белый цвет для SDF
         iconAllowOverlap: Expression.literal(true), 
         iconIgnorePlacement: Expression.literal(true),
       ));
