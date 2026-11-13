@@ -388,21 +388,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
+    // ✅ Загружаем иконки отдельно, чтобы ошибка одной не ломала другие
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
+    } catch (e) { debugPrint('Ошибка загрузки стрелки: $e'); }
 
+    try {
       final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
       await style.addImage('event_spotted', spottedBytes.buffer.asUint8List());
+    } catch (e) { debugPrint('Ошибка загрузки spotted: $e'); }
 
+    try {
       final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
       await style.addImage('event_wounded', woundedBytes.buffer.asUint8List());
+    } catch (e) { debugPrint('Ошибка загрузки wounded: $e'); }
 
+    try {
       final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
       await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List());
-    } catch (e) {
-      debugPrint('Не удалось загрузить иконки: $e');
-    }
+    } catch (e) { debugPrint('Ошибка загрузки harvested: $e'); }
 
     if (_currentStyleIndex > 0) {
       try {
@@ -441,7 +446,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } catch (e) { debugPrint('Ошибка добавления слоя подписей: $e'); }
     }
 
+    // ✅ ФИКС: Принудительно перерисовываем маркер пользователя ПОВЕРХ спутника
+    try { await style.layers.remove('user_location_layer'); } catch (_) {}
+    _userLayerReady = false; 
     await _updateUserLocationLayer();
+    
     await _updateOthersLayer();
   }
 
@@ -539,7 +548,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // ===============================================================
-  // ✅ E2: ЛОГИКА ОТПРАВКИ СОБЫТИЙ
+  // ✅ E2: ОТПРАВКА СОБЫТИЙ
   // ===============================================================
   
   void _showEventBottomSheet() {
@@ -574,10 +583,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 20),
                   
-                  // Выбор типа события
                   Row(
                     children: [
-                      _buildEventOption('spotted', 'Виден', Colors.amber, selectedType, (val) => setModalState(() => selectedType = val)),
+                      // ✅ Изменено на "Видел"
+                      _buildEventOption('spotted', 'Видел', Colors.amber, selectedType, (val) => setModalState(() => selectedType = val)),
                       const SizedBox(width: 8),
                       _buildEventOption('wounded', 'Подранен', Colors.deepOrange, selectedType, (val) => setModalState(() => selectedType = val)),
                       const SizedBox(width: 8),
@@ -586,7 +595,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 24),
 
-                  // Заметка
                   TextField(
                     controller: noteCtrl,
                     maxLines: 2,
@@ -599,7 +607,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 16),
 
-                  // Кнопка отправить
                   FilledButton.icon(
                     icon: const Icon(Icons.send),
                     label: const Text('Отправить событие'),
@@ -673,7 +680,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         'note': note.isEmpty ? null : note,
       });
       _toast('Событие добавлено');
-      // Примечание: визуально на карте у себя оно появится только после шага E3 (подписка на события).
     } catch (e) {
       _toast('Ошибка отправки события: $e');
     }
@@ -732,21 +738,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         children: const [MapCompass()],
       ),
       
-      // ✅ E2: Две кнопки (Событие и Найти меня)
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           FloatingActionButton(
-            heroTag: 'event_fab', // Обязательно для нескольких FAB
+            heroTag: 'event_fab',
             onPressed: _showEventBottomSheet,
-            backgroundColor: const Color(0xFFE64A19), // Оранжевый цвет
+            backgroundColor: const Color(0xFFE64A19), // Оранжевый
             tooltip: 'Добавить событие',
             child: const Icon(Icons.add_alert, color: Colors.white),
           ),
           const SizedBox(height: 16),
           FloatingActionButton(
-            heroTag: 'location_fab', // Обязательно для нескольких FAB
+            heroTag: 'location_fab',
             onPressed: _locating ? null : _centerOnMe,
             tooltip: 'Найти меня',
             child: _locating
