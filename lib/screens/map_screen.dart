@@ -6,7 +6,7 @@ import 'package:maplibre/maplibre.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:audioplayers/audioplayers.dart'; // ✅ Новый импорт
+import 'package:audioplayers/audioplayers.dart';
 import '../app_session.dart';
 import 'home_screen.dart';
 
@@ -59,7 +59,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   static const double _labelsMinZoom = 12;
 
-  // ✅ E1: Аудиоплеер для событий
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   static const String _satelliteTileUrl =
@@ -106,7 +105,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // ✅ E1: Настраиваем аудиоплеер (звук в режиме "будильника", игнорируя беззвучный режим)
     _audioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
@@ -135,7 +133,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
     _cleanupTimer?.cancel();
-    _audioPlayer.dispose(); // ✅ Освобождаем ресурсы плеера
+    _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -390,7 +388,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
-    // ✅ E1: Загружаем иконки стрелки И СОБЫТИЙ в стиль карты
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
@@ -428,33 +425,20 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (_currentStyleIndex == 2) {
       try {
         await style.layers.add(LineStyleLayer(
-          id: 'roads_layer',
-          sourceId: 'openmaptiles',
-          sourceLayerId: 'streets',
-          color: Expression.literal(const Color(0xFFFFFFFF)),
-          width: Expression.literal(1.5),
-          opacity: Expression.literal(0.8),
+          id: 'roads_layer', sourceId: 'openmaptiles', sourceLayerId: 'streets',
+          color: Expression.literal(const Color(0xFFFFFFFF)), width: Expression.literal(1.5), opacity: Expression.literal(0.8),
         ));
-      } catch (e) {
-        debugPrint('Ошибка добавления слоя дорог: $e');
-      }
+      } catch (e) { debugPrint('Ошибка добавления слоя дорог: $e'); }
 
       try {
         await style.layers.add(SymbolStyleLayer(
-          id: 'labels_layer',
-          sourceId: 'openmaptiles',
-          sourceLayerId: 'place',
-          textField: Expression.literal('{name}'),
-          textSize: Expression.literal(13),
-          textColor: Expression.literal(const Color(0xFFFFFFFF)),
-          textHaloColor: Expression.literal(const Color(0xFF000000)),
-          textHaloWidth: Expression.literal(1.8),
-          textFont: Expression.literal(const ['Noto Sans Regular']),
+          id: 'labels_layer', sourceId: 'openmaptiles', sourceLayerId: 'place',
+          textField: Expression.literal('{name}'), textSize: Expression.literal(13),
+          textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
+          textHaloWidth: Expression.literal(1.8), textFont: Expression.literal(const ['Noto Sans Regular']),
           textAllowOverlap: Expression.literal(false),
         ));
-      } catch (e) {
-        debugPrint('Ошибка добавления слоя подписей: $e');
-      }
+      } catch (e) { debugPrint('Ошибка добавления слоя подписей: $e'); }
     }
 
     await _updateUserLocationLayer();
@@ -475,29 +459,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final bearing = _myBearing ?? 0.0;
       final geoJsonData = GeoJsonData.text(jsonEncode({
         'type': 'Feature',
-        'geometry': {
-          'type': 'Point',
-          'coordinates': [pos.lon, pos.lat],
-        },
+        'geometry': {'type': 'Point', 'coordinates': [pos.lon, pos.lat]},
         'properties': {'bearing': bearing},
       }));
 
-      try {
-        await style.sources.remove('user_location_source');
-      } catch (_) {}
-
+      try { await style.sources.remove('user_location_source'); } catch (_) {}
       await style.sources.add(GeoJsonSource.data(id: 'user_location_source', data: geoJsonData));
 
       if (!_userLayerReady) {
         await style.layers.add(SymbolStyleLayer(
-          id: 'user_location_layer',
-          sourceId: 'user_location_source',
-          iconImage: Expression.literal('user_arrow'),
-          iconSize: Expression.literal(1.0),
-          iconRotate: Expression.get('bearing').asNumber(),
-          iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
-          iconAllowOverlap: Expression.literal(true),
-          iconIgnorePlacement: Expression.literal(true),
+          id: 'user_location_layer', sourceId: 'user_location_source',
+          iconImage: Expression.literal('user_arrow'), iconSize: Expression.literal(1.0),
+          iconRotate: Expression.get('bearing').asNumber(), iconRotationAlignment: Expression.literal(IconRotationAlignment.map),
+          iconAllowOverlap: Expression.literal(true), iconIgnorePlacement: Expression.literal(true),
         ));
         _userLayerReady = true;
       }
@@ -537,10 +511,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         return {
           'type': 'Feature',
-          'geometry': {
-            'type': 'Point',
-            'coordinates': [h['lon'], h['lat']],
-          },
+          'geometry': {'type': 'Point', 'coordinates': [h['lon'], h['lat']]},
           'properties': {'name': name, 'color': color, 'label': label},
         };
       }).toList();
@@ -549,31 +520,166 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await style.sources.add(GeoJsonSource.data(id: 'others_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
       await style.layers.add(CircleStyleLayer(
-        id: 'others_layer',
-        sourceId: 'others_source',
-        color: Expression.get('color').convertToColor(),
-        radius: Expression.literal(9),
-        strokeColor: Expression.literal(const Color(0xFFFFFFFF)),
-        strokeWidth: Expression.literal(2),
+        id: 'others_layer', sourceId: 'others_source',
+        color: Expression.get('color').convertToColor(), radius: Expression.literal(9),
+        strokeColor: Expression.literal(const Color(0xFFFFFFFF)), strokeWidth: Expression.literal(2),
       ));
 
       await style.layers.add(SymbolStyleLayer(
-        id: 'others_labels_layer',
-        sourceId: 'others_source',
-        textField: Expression.get('label').asString(),
-        textSize: Expression.literal(12),
-        textColor: Expression.literal(const Color(0xFFFFFFFF)),
-        textHaloColor: Expression.literal(const Color(0xFF000000)),
-        textHaloWidth: Expression.literal(2),
-        textFont: Expression.literal(const ['Noto Sans Regular']),
-        textAllowOverlap: Expression.literal(false),
-        textOffset: Expression.literal(const Offset(0, -1.2)),
+        id: 'others_labels_layer', sourceId: 'others_source',
+        textField: Expression.get('label').asString(), textSize: Expression.literal(12),
+        textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
+        textHaloWidth: Expression.literal(2), textFont: Expression.literal(const ['Noto Sans Regular']),
+        textAllowOverlap: Expression.literal(false), textOffset: Expression.literal(const Offset(0, -1.2)),
         minZoom: _labelsMinZoom,
       ));
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
     }
   }
+
+  // ===============================================================
+  // ✅ E2: ЛОГИКА ОТПРАВКИ СОБЫТИЙ
+  // ===============================================================
+  
+  void _showEventBottomSheet() {
+    if (_myPos == null) {
+      _toast('Ожидание GPS-сигнала...');
+      return;
+    }
+
+    String selectedType = 'spotted';
+    final noteCtrl = TextEditingController();
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 24, right: 24, top: 8,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Событие на охоте',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // Выбор типа события
+                  Row(
+                    children: [
+                      _buildEventOption('spotted', 'Виден', Colors.amber, selectedType, (val) => setModalState(() => selectedType = val)),
+                      const SizedBox(width: 8),
+                      _buildEventOption('wounded', 'Подранен', Colors.deepOrange, selectedType, (val) => setModalState(() => selectedType = val)),
+                      const SizedBox(width: 8),
+                      _buildEventOption('harvested', 'Добыт', Colors.green, selectedType, (val) => setModalState(() => selectedType = val)),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Заметка
+                  TextField(
+                    controller: noteCtrl,
+                    maxLines: 2,
+                    maxLength: 200,
+                    decoration: const InputDecoration(
+                      labelText: 'Заметка (необязательно)',
+                      hintText: 'Например: крупный секач, ушёл на север',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Кнопка отправить
+                  FilledButton.icon(
+                    icon: const Icon(Icons.send),
+                    label: const Text('Отправить событие'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                    ),
+                    onPressed: () async {
+                      Navigator.of(ctx).pop(); // Закрываем шторку
+                      await _sendEvent(selectedType, noteCtrl.text.trim());
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildEventOption(String type, String label, MaterialColor color, String selectedType, Function(String) onSelect) {
+    final isSelected = type == selectedType;
+    return Expanded(
+      child: InkWell(
+        onTap: () => onSelect(type),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          decoration: BoxDecoration(
+            color: isSelected ? color.withOpacity(0.2) : Colors.transparent,
+            border: Border.all(
+              color: isSelected ? color : Colors.white24,
+              width: isSelected ? 2 : 1,
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              Icon(Icons.location_on, color: color, size: 28),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  color: isSelected ? Colors.white : Colors.white70,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendEvent(String type, String note) async {
+    final groupId = AppSession.groupId;
+    final hunterId = AppSession.hunterId;
+    final hunterName = AppSession.hunterName;
+    final pos = _myPos;
+
+    if (groupId == null || hunterId == null || hunterName == null || pos == null) return;
+
+    try {
+      await Supabase.instance.client.from('events').insert({
+        'group_id': groupId,
+        'hunter_id': hunterId,
+        'hunter_name': hunterName,
+        'type': type,
+        'lat': pos.lat,
+        'lon': pos.lon,
+        'note': note.isEmpty ? null : note,
+      });
+      _toast('Событие добавлено');
+      // Примечание: визуально на карте у себя оно появится только после шага E3 (подписка на события).
+    } catch (e) {
+      _toast('Ошибка отправки события: $e');
+    }
+  }
+
+  // ===============================================================
 
   void _toast(String msg) {
     if (!mounted) return;
@@ -625,11 +731,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         layers: _buildLayers(),
         children: const [MapCompass()],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _locating ? null : _centerOnMe,
-        child: _locating
-            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.gps_fixed),
+      
+      // ✅ E2: Две кнопки (Событие и Найти меня)
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            heroTag: 'event_fab', // Обязательно для нескольких FAB
+            onPressed: _showEventBottomSheet,
+            backgroundColor: const Color(0xFFE64A19), // Оранжевый цвет
+            tooltip: 'Добавить событие',
+            child: const Icon(Icons.add_alert, color: Colors.white),
+          ),
+          const SizedBox(height: 16),
+          FloatingActionButton(
+            heroTag: 'location_fab', // Обязательно для нескольких FAB
+            onPressed: _locating ? null : _centerOnMe,
+            tooltip: 'Найти меня',
+            child: _locating
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.gps_fixed),
+          ),
+        ],
       ),
     );
   }
