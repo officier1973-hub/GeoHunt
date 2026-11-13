@@ -25,7 +25,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
 
-  // ✅ E3: Подписка на события
   StreamSubscription<List<Map<String, dynamic>>>? _eventsSub;
   List<Map<String, dynamic>> _events = [];
   final Set<String> _seenEventIds = {};
@@ -124,7 +123,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _startLocation();
     _startCompass();
     _subscribeToGroupHunters();
-    _subscribeToEvents(); // ✅ E3: Подписка на события
+    _subscribeToEvents();
     _startHeartbeat();
     _startFreshnessTimer();
     _startCleanupTimer();
@@ -137,7 +136,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _posSub?.cancel();
     _compassSub?.cancel();
     _huntersSub?.cancel();
-    _eventsSub?.cancel(); // ✅ Отмена подписки
+    _eventsSub?.cancel();
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
     _cleanupTimer?.cancel();
@@ -172,9 +171,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ===============================================================
-  // ✅ E3: ПОДПИСКА И ЗВУКИ СОБЫТИЙ
-  // ===============================================================
   void _subscribeToEvents() {
     final groupId = AppSession.groupId;
     if (groupId == null) return;
@@ -188,7 +184,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .listen((rows) {
       if (!mounted) return;
 
-      // Проверяем новые события (только пришедшие ПОСЛЕ первой загрузки)
       if (!_initialEventsLoaded) {
         for (final row in rows) {
           _seenEventIds.add(row['id'] as String);
@@ -199,8 +194,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           final id = row['id'] as String;
           if (!_seenEventIds.contains(id)) {
             _seenEventIds.add(id);
-            // Воспроизводим звук ТОЛЬКО если событие создал другой охотник
-            if (row['hunter_id'] != AppSession.hunterId) {
+            // ✅ Проверка: звук только если hunter_id не мой и не null (если null, считаем чужим для страховки)
+            final authorId = row['hunter_id'];
+            if (authorId != AppSession.hunterId) {
               _playEventSound(row['type'] as String);
             }
           }
@@ -225,7 +221,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       debugPrint('Ошибка воспроизведения звука: $e');
     }
   }
-  // ===============================================================
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
@@ -511,9 +506,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     try { await style.layers.remove('user_location_layer'); } catch (_) {}
     _userLayerReady = false; 
     await _updateUserLocationLayer();
-    
     await _updateOthersLayer();
-    await _updateEventsLayer(); // ✅ Отрисовка событий
+    await _updateEventsLayer();
   }
 
   Future<void> _updateUserLocationLayer() async {
@@ -609,9 +603,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ===============================================================
-  // ✅ E3: ОТРИСОВКА СОБЫТИЙ НА КАРТЕ
-  // ===============================================================
   Future<void> _updateEventsLayer() async {
     final style = _styleCtrl;
     if (style == null) return;
@@ -666,30 +657,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
       await style.sources.add(GeoJsonSource.data(id: 'events_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
-      // Иконки событий
       await style.layers.add(SymbolStyleLayer(
         id: 'events_icons_layer', sourceId: 'events_source',
         iconImage: Expression.get('icon').asString(),
-        iconSize: Expression.literal(0.6), // Чуть уменьшим, так как картинки 64x64
+        iconSize: Expression.literal(0.6),
         iconAllowOverlap: Expression.literal(true), 
         iconIgnorePlacement: Expression.literal(true),
       ));
 
-      // Подписи к событиям
       await style.layers.add(SymbolStyleLayer(
         id: 'events_labels_layer', sourceId: 'events_source',
         textField: Expression.get('label').asString(), textSize: Expression.literal(11),
         textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
         textHaloWidth: Expression.literal(2), textFont: Expression.literal(const ['Noto Sans Regular']),
-        textAllowOverlap: Expression.literal(false), textOffset: Expression.literal(const Offset(0, 1.5)), // Под иконкой
-        minZoom: _labelsMinZoom, // Появляются с 12 зума
+        textAllowOverlap: Expression.literal(false), textOffset: Expression.literal(const Offset(0, 1.5)),
+        minZoom: _labelsMinZoom,
       ));
 
     } catch (e) {
       debugPrint('Ошибка обновления слоя событий: $e');
     }
   }
-  // ===============================================================
 
   void _showEventBottomSheet() {
     if (_myPos == null) {
@@ -771,7 +759,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Expanded(
       child: InkWell(
         onTap: () => onSelect(type),
-        borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 16),
           decoration: BoxDecoration(
