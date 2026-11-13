@@ -447,19 +447,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
-    // ✅ SDF ВКЛЮЧЕН ДЛЯ СОБЫТИЙ
+    // ✅ SDF ВКЛЮЧЕН ДЛЯ СОБЫТИЙ (третий аргумент = true)
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
       final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
-      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List(), sdf: true);
+      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List(), true);
 
       final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
-      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List(), sdf: true);
+      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List(), true);
 
       final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
-      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List(), sdf: true);
+      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List(), true);
     } catch (e) {
       debugPrint('Не удалось загрузить иконки: $e');
     }
