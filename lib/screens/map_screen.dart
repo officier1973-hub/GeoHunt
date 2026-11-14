@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:maplibre/maplibre.dart';
@@ -104,6 +106,57 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (age.inMinutes >= 1) return '${age.inMinutes} мин';
     return 'меньше минуты';
   }
+
+  // ===============================================================
+  // ✅ ГЕНЕРАЦИЯ ИКОНОК ЧЕРЕЗ CANVAS (ГАРАНТИЯ ПРОЗРАЧНОСТИ)
+  // ===============================================================
+  Future<Uint8List> _createMapIcon({
+    required IconData icon,
+    required Color backgroundColor,
+  }) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = 64.0;
+    const radius = size / 2 - 3; // Оставляем отступ для обводки
+    const center = Offset(size / 2, size / 2);
+
+    // 1. Заливаем цветной круг
+    final paintFill = Paint()..color = backgroundColor;
+    canvas.drawCircle(center, radius, paintFill);
+
+    // 2. Рисуем белую обводку (чтобы выделялось на любой карте)
+    final paintBorder = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0;
+    canvas.drawCircle(center, radius, paintBorder);
+
+    // 3. Рисуем белую иконку внутри
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(icon.codePoint),
+        style: TextStyle(
+          fontSize: 38,
+          fontFamily: icon.fontFamily,
+          package: icon.fontPackage,
+          color: Colors.white,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    textPainter.layout();
+    textPainter.paint(
+      canvas,
+      Offset((size - textPainter.width) / 2, (size - textPainter.height) / 2),
+    );
+
+    // 4. Конвертируем в PNG-байты
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size.toInt(), size.toInt());
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    return data!.buffer.asUint8List();
+  }
+  // ===============================================================
 
   @override
   void initState() {
@@ -447,21 +500,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
-    // ✅ Обычная загрузка иконок (без SDF)
+    // ✅ Генерируем иконки событий программно (идеальная прозрачность)
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
-      final spottedBytes = await rootBundle.load('assets/icons/event_spotted.png');
-      await style.addImage('event_spotted', spottedBytes.buffer.asUint8List());
+      final spottedBytes = await _createMapIcon(
+        icon: Icons.remove_red_eye,
+        backgroundColor: const Color(0xFFFFC107), // Янтарный
+      );
+      await style.addImage('event_spotted', spottedBytes);
 
-      final woundedBytes = await rootBundle.load('assets/icons/event_wounded.png');
-      await style.addImage('event_wounded', woundedBytes.buffer.asUint8List());
+      final woundedBytes = await _createMapIcon(
+        icon: Icons.water_drop,
+        backgroundColor: const Color(0xFFE64A19), // Оранжево-красный
+      );
+      await style.addImage('event_wounded', woundedBytes);
 
-      final harvestedBytes = await rootBundle.load('assets/icons/event_harvested.png');
-      await style.addImage('event_harvested', harvestedBytes.buffer.asUint8List());
+      final harvestedBytes = await _createMapIcon(
+        icon: Icons.track_changes, // Мишень
+        backgroundColor: const Color(0xFF388E3C), // Зеленый
+      );
+      await style.addImage('event_harvested', harvestedBytes);
     } catch (e) {
-      debugPrint('Не удалось загрузить иконки: $e');
+      debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
     }
 
     if (_currentStyleIndex > 0) {
@@ -655,7 +717,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
       await style.sources.add(GeoJsonSource.data(id: 'events_source', data: GeoJsonData.text(jsonEncode(featureCollection))));
 
-      // ✅ Обычные иконки (без iconColor, чтобы не перекрашивать)
       await style.layers.add(SymbolStyleLayer(
         id: 'events_icons_layer', sourceId: 'events_source',
         iconImage: Expression.get('icon').asString(),
