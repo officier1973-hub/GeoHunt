@@ -26,6 +26,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
+  
+  // ✅ Состояние для SOS
+  bool _mySosActive = false;
+  final Map<String, bool> _otherHuntersSosState = {};
+  final AudioPlayer _sirenPlayer = AudioPlayer();
 
   StreamSubscription<List<Map<String, dynamic>>>? _eventsSub;
   List<Map<String, dynamic>> _events = [];
@@ -107,9 +112,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return 'меньше минуты';
   }
 
-  // ===============================================================
-  // ✅ ГЕНЕРАЦИЯ ИКОНОК ЧЕРЕЗ CANVAS (ГАРАНТИЯ ПРОЗРАЧНОСТИ)
-  // ===============================================================
   Future<Uint8List> _createMapIcon({
     required IconData icon,
     required Color backgroundColor,
@@ -117,21 +119,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     const size = 64.0;
-    const radius = size / 2 - 3; // Оставляем отступ для обводки
+    const radius = size / 2 - 3;
     const center = Offset(size / 2, size / 2);
 
-    // 1. Заливаем цветной круг
     final paintFill = Paint()..color = backgroundColor;
     canvas.drawCircle(center, radius, paintFill);
 
-    // 2. Рисуем белую обводку (чтобы выделялось на любой карте)
     final paintBorder = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3.0;
     canvas.drawCircle(center, radius, paintBorder);
 
-    // 3. Рисуем белую иконку внутри
     final textPainter = TextPainter(
       text: TextSpan(
         text: String.fromCharCode(icon.codePoint),
@@ -150,13 +149,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       Offset((size - textPainter.width) / 2, (size - textPainter.height) / 2),
     );
 
-    // 4. Конвертируем в PNG-байты
     final picture = recorder.endRecording();
     final image = await picture.toImage(size.toInt(), size.toInt());
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     return data!.buffer.asUint8List();
   }
-  // ===============================================================
 
   @override
   void initState() {
@@ -164,6 +161,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     
     _audioPlayer.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.alarm,
+        audioFocus: AndroidAudioFocus.gainTransient,
+      ),
+    ));
+
+    // ✅ Настраиваем плеер для сирены (НЕ зацикливаем, проиграем ровно 2 раза)
+    _sirenPlayer.setReleaseMode(ReleaseMode.stop);
+    _sirenPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
         stayAwake: true,
@@ -194,6 +203,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _freshnessTimer?.cancel();
     _cleanupTimer?.cancel();
     _audioPlayer.dispose();
+    _sirenPlayer.dispose();
     super.dispose();
   }
 
@@ -209,7 +219,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     try {
       final supabase = Supabase.instance.client;
-      
       final hunterCutoff = DateTime.now().toUtc().subtract(const Duration(hours: 2)).toIso8601String();
       var hunterQuery = supabase.from('hunters').delete().eq('group_id', groupId).lt('updated_at', hunterCutoff);
       if (myId != null) hunterQuery = hunterQuery.neq('id', myId);
@@ -328,6 +337,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .stream(primaryKey: ['id'])
         .eq('group_id', groupId)
         .listen((rows) {
+      
+      for (final row in rows) {
+        final id = row['id'] as String;
+        final isSos = row['sos'] == true;
+
+        if (id == myId) {
+          _mySosActive = isSos;
+        } else {
+          if (isSos && _otherHuntersSosState[id] != true) {
+            _triggerIncomingSos(row['name'] as String? ?? 'Охотник');
+          }
+          _otherHuntersSosState[id] = isSos;
+        }
+      }
+
       final others = rows
           .where((r) => r['id'] != myId)
           .where((r) => r['lat'] != null && r['lon'] != null)
@@ -337,6 +361,96 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _updateOthersLayer();
     }, onError: (e) => debugPrint('Ошибка подписки на охотников: $e'));
   }
+
+  // ===============================================================
+  // ✅ ЛОГИКА SOS (Сирена играет 2 раза)
+  // ===============================================================
+  void _triggerIncomingSos(String name) async {
+    try {
+      // 1. Включаем первый раз
+      await _sirenPlayer.stop();
+      await _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
+
+      // 2. Ждем, когда закончится первый, и включаем второй
+      _sirenPlayer.onPlayerComplete.first.then((_) {
+        _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
+      });
+    } catch (e) {
+      debugPrint('Ошибка сирены: $e');
+    }
+
+    if (!mounted) return;
+    
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFFB71C1C),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
+              SizedBox(width: 8),
+              Text('SOS!', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Text(
+            'Охотник "$name" просит о помощи!\n\nПосмотрите на карту, его точка мигает красным.',
+            style: const TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          actions: [
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.red),
+              onPressed: () {
+                _sirenPlayer.stop(); 
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('Понятно'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _toggleMySos() async {
+    final hunterId = AppSession.hunterId;
+    if (hunterId == null) return;
+
+    if (!_mySosActive) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Отправить сигнал SOS?'),
+          content: const Text('Все участники группы услышат громкую сирену и увидят вашу точку красным. Используйте только в экстренной ситуации.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('SOS!'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    try {
+      final newState = !_mySosActive;
+      await Supabase.instance.client.from('hunters').update({
+        'sos': newState,
+        'sos_at': newState ? DateTime.now().toUtc().toIso8601String() : null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', hunterId);
+      
+      setState(() => _mySosActive = newState);
+      if (newState) _toast('Сигнал SOS отправлен!');
+    } catch (e) {
+      _toast('Ошибка отправки SOS: $e');
+    }
+  }
+  // ===============================================================
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -500,27 +614,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userUpdatePending = false;
     _lastBearingUpdate = null;
 
-    // ✅ Генерируем иконки событий программно (идеальная прозрачность)
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
-      final spottedBytes = await _createMapIcon(
-        icon: Icons.remove_red_eye,
-        backgroundColor: const Color(0xFFFFC107), // Янтарный
-      );
+      final spottedBytes = await _createMapIcon(icon: Icons.remove_red_eye, backgroundColor: const Color(0xFFFFC107));
       await style.addImage('event_spotted', spottedBytes);
 
-      final woundedBytes = await _createMapIcon(
-        icon: Icons.water_drop,
-        backgroundColor: const Color(0xFFE64A19), // Оранжево-красный
-      );
+      final woundedBytes = await _createMapIcon(icon: Icons.water_drop, backgroundColor: const Color(0xFFE64A19));
       await style.addImage('event_wounded', woundedBytes);
 
-      final harvestedBytes = await _createMapIcon(
-        icon: Icons.track_changes, // Мишень
-        backgroundColor: const Color(0xFF388E3C), // Зеленый
-      );
+      final harvestedBytes = await _createMapIcon(icon: Icons.track_changes, backgroundColor: const Color(0xFF388E3C));
       await style.addImage('event_harvested', harvestedBytes);
     } catch (e) {
       debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
@@ -625,19 +729,46 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       final features = _otherHunters.map((h) {
         final name = (h['name'] ?? '').toString();
+        final isSos = h['sos'] == true;
         final dt = _parseUpdatedAt(h['updated_at']);
         final age = dt != null ? now.difference(dt) : null;
         final isStale = age != null && age > _staleThreshold;
-        String color = isStale ? '#9E9E9E' : (h['color'] ?? '#1976D2').toString();
+        
+        String color;
+        double radius;
+        double strokeWidth;
+
+        if (isSos) {
+          color = '#FF0000'; 
+          radius = 14.0;      
+          strokeWidth = 4.0;
+        } else if (isStale) {
+          color = '#9E9E9E'; 
+          radius = 9.0;
+          strokeWidth = 2.0;
+        } else {
+          color = (h['color'] ?? '#1976D2').toString();
+          radius = 9.0;
+          strokeWidth = 2.0;
+        }
+
         String label = name;
-        if (age != null && age > const Duration(minutes: 5)) {
+        if (isSos) {
+          label = 'SOS! $name';
+        } else if (age != null && age > const Duration(minutes: 5)) {
           label = '$name · ${_formatAge(age)}';
         }
 
         return {
           'type': 'Feature',
           'geometry': {'type': 'Point', 'coordinates': [h['lon'], h['lat']]},
-          'properties': {'name': name, 'color': color, 'label': label},
+          'properties': {
+            'name': name, 
+            'color': color, 
+            'label': label,
+            'radius': radius,
+            'strokeWidth': strokeWidth,
+          },
         };
       }).toList();
 
@@ -646,8 +777,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       await style.layers.add(CircleStyleLayer(
         id: 'others_layer', sourceId: 'others_source',
-        color: Expression.get('color').convertToColor(), radius: Expression.literal(9),
-        strokeColor: Expression.literal(const Color(0xFFFFFFFF)), strokeWidth: Expression.literal(2),
+        color: Expression.get('color').convertToColor(), 
+        radius: Expression.get('radius').asNumber(), 
+        strokeColor: Expression.literal(const Color(0xFFFFFFFF)), 
+        strokeWidth: Expression.get('strokeWidth').asNumber(), 
       ));
 
       await style.layers.add(SymbolStyleLayer(
@@ -655,7 +788,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textField: Expression.get('label').asString(), textSize: Expression.literal(12),
         textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
         textHaloWidth: Expression.literal(2), textFont: Expression.literal(const ['Noto Sans Regular']),
-        textAllowOverlap: Expression.literal(false), textOffset: Expression.literal(const Offset(0, -1.2)),
+        textAllowOverlap: Expression.literal(false), textOffset: Expression.literal(const Offset(0, -1.5)),
         minZoom: _labelsMinZoom,
       ));
     } catch (e) {
@@ -897,6 +1030,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              Icons.warning_rounded,
+              color: _mySosActive ? Colors.red : Colors.white,
+            ),
+            tooltip: _mySosActive ? 'Отменить SOS' : 'Подать сигнал SOS',
+            onPressed: _toggleMySos,
+          ),
           TextButton.icon(
             onPressed: _cycleStyle,
             icon: const Icon(Icons.layers, color: Colors.white),
