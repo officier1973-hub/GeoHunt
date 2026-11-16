@@ -56,6 +56,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   DateTime? _lastBearingUpdate;
   static const _bearingUpdateInterval = Duration(milliseconds: 100);
 
+  // ✅ Переменные для троттлинга записи в БД
+  DateTime? _lastDbUpdate;
+  static const _dbUpdateInterval = Duration(seconds: 30);
+
   bool _userLayerReady = false;
   bool _userUpdateInProgress = false;
   bool _userUpdatePending = false;
@@ -639,6 +643,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
 
     _applyBearing();
+    
+    // ✅ ВОЗВРАЩЕНА ОТПРАВКА КООРДИНАТ В БАЗУ
+    await _updateMyPositionInDb(newPos);
 
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
@@ -660,6 +667,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       _lastCenter = newPos;
       _lastZoom = 15;
+    }
+  }
+
+  // ✅ ВОЗВРАЩЕННЫЙ МЕТОД ОТПРАВКИ В БАЗУ
+  Future<void> _updateMyPositionInDb(LatLng pos) async {
+    final hunterId = AppSession.hunterId;
+    if (hunterId == null) return;
+    final now = DateTime.now();
+    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < _dbUpdateInterval) return;
+    _lastDbUpdate = now;
+
+    try {
+      await Supabase.instance.client.from('hunters').update({
+        'lat': pos.latitude,
+        'lon': pos.longitude,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', hunterId);
+    } catch (e) {
+      debugPrint('Не удалось обновить позицию в БД: $e');
     }
   }
 
@@ -761,15 +787,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         if (isSos) {
           color = '#FF0000'; 
-          radius = 18.0;      // ✅ Увеличен радиус для SOS
+          radius = 18.0;      
           strokeWidth = 5.0;
         } else if (isStale) {
           color = '#9E9E9E'; 
-          radius = 12.0;      // ✅ Увеличен стандартный радиус
+          radius = 12.0;      
           strokeWidth = 3.0;
         } else {
           color = (h['color'] ?? '#1976D2').toString();
-          radius = 12.0;      // ✅ Увеличен стандартный радиус
+          radius = 12.0;      
           strokeWidth = 3.0;
         }
 
