@@ -566,7 +566,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (confirmed != true) return;
 
-    FlutterBackgroundService().invoke("stopService");
+    // ✅ Отправляем сигнал остановки трекинга (сервис не умирает, поэтому движок не падает)
+    FlutterBackgroundService().invoke("stopTracking");
 
     final hunterId = AppSession.hunterId;
     if (hunterId != null) {
@@ -812,7 +813,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
         textOffset: [0, -1.5],
-      ), minzoom: _labelsMinZoom); // ✅ minzoom в addSymbolLayer
+      ), minzoom: _labelsMinZoom);
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
     }
@@ -888,7 +889,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
         textOffset: [0, 1.5],
-      ), minzoom: _labelsMinZoom); // ✅ minzoom в addSymbolLayer
+      ), minzoom: _labelsMinZoom);
 
     } catch (e) {
       debugPrint('Ошибка обновления слоя событий: $e');
@@ -1094,7 +1095,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         onMapCreated: _onMapCreated,
         onStyleLoadedCallback: _onStyleLoaded,
-        translucentTextureSurface: true,
+        // ✅ УБРАНО translucentTextureSurface: true, чтобы не было белого экрана
         trackCameraPosition: true,
         onCameraIdle: _onCameraMoveEnd,
         compassEnabled: false,
