@@ -16,6 +16,9 @@ const supabaseAnonKey = 'sb_publishable_CVhiWocVbOe54-Bleexnpg_9meljsC8';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // ❌ MapLibreMap.useHybridComposition = true; // УДАЛЕНО (нет в пакете maplibre)
+
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   await AppSession.load();
 
