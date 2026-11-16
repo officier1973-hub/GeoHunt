@@ -123,52 +123,22 @@ void onStart(ServiceInstance service) async {
 }
 // ===============================================================
 
-// ✅ Виджет для полного перезапуска приложения
-class RestartWidget extends StatefulWidget {
-  const RestartWidget({super.key, required this.child});
-  final Widget child;
-
-  static void restartApp(BuildContext context) {
-    context.findAncestorStateOfType<RestartWidgetState>()?.restartApp();
-  }
-
-  @override
-  State<RestartWidget> createState() => RestartWidgetState();
-}
-
-class RestartWidgetState extends State<RestartWidget> {
-  Key _key = UniqueKey();
-
-  void restartApp() {
-    setState(() {
-      _key = UniqueKey();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return KeyedSubtree(key: _key, child: widget.child);
-  }
-}
-
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return RestartWidget(
-      child: MaterialApp(
-        title: 'GeoHunt',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF2E4A2C),
-            brightness: Brightness.dark,
-          ),
+    return MaterialApp(
+      title: 'GeoHunt',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2E4A2C),
+          brightness: Brightness.dark,
         ),
-        home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
       ),
+      home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
     );
   }
 }
