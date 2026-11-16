@@ -27,7 +27,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
   
-  // ✅ Состояние для SOS
   bool _mySosActive = false;
   final Map<String, bool> _otherHuntersSosState = {};
   final AudioPlayer _sirenPlayer = AudioPlayer();
@@ -50,6 +49,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double? _lastZoom;
 
   int _currentStyleIndex = 0;
+
+  // ✅ Флаг офлайн-режима
+  bool _isOfflineMode = false;
 
   DateTime? _lastDbUpdate;
   static const _dbUpdateInterval = Duration(seconds: 30);
@@ -170,7 +172,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     ));
 
-    // ✅ Настраиваем плеер для сирены (НЕ зацикливаем, проиграем ровно 2 раза)
     _sirenPlayer.setReleaseMode(ReleaseMode.stop);
     _sirenPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
@@ -206,6 +207,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _sirenPlayer.dispose();
     super.dispose();
   }
+
+  // ===============================================================
+  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (Обновлено)
+  // ===============================================================
+  void _toggleOfflineMode(bool value) {
+    setState(() {
+      _isOfflineMode = value;
+    });
+
+    if (_isOfflineMode) {
+      MapLibreNetwork.connectivityMode = ConnectivityMode.forceOffline;
+      _toast('Офлайн-режим включён. Карта использует только кэш.');
+    } else {
+      MapLibreNetwork.connectivityMode = ConnectivityMode.automatic;
+      _toast('Онлайн-режим восстановлен.');
+    }
+  }
+  // ===============================================================
 
   void _startCleanupTimer() {
     _cleanupTimer?.cancel();
@@ -362,16 +381,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }, onError: (e) => debugPrint('Ошибка подписки на охотников: $e'));
   }
 
-  // ===============================================================
-  // ✅ ЛОГИКА SOS (Сирена играет 2 раза)
-  // ===============================================================
   void _triggerIncomingSos(String name) async {
     try {
-      // 1. Включаем первый раз
       await _sirenPlayer.stop();
       await _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
 
-      // 2. Ждем, когда закончится первый, и включаем второй
       _sirenPlayer.onPlayerComplete.first.then((_) {
         _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
       });
@@ -450,7 +464,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _toast('Ошибка отправки SOS: $e');
     }
   }
-  // ===============================================================
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -1038,13 +1051,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             tooltip: _mySosActive ? 'Отменить SOS' : 'Подать сигнал SOS',
             onPressed: _toggleMySos,
           ),
+          
+          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА
+          Transform.scale(
+            scale: 0.8,
+            child: Switch(
+              value: _isOfflineMode,
+              onChanged: (value) => _toggleOfflineMode(value),
+              activeColor: Colors.orange,
+            ),
+          ),
+
           TextButton.icon(
             onPressed: _cycleStyle,
-            icon: const Icon(Icons.layers, color: Colors.white),
-            label: Text(_styleNames[_currentStyleIndex], style: const TextStyle(color: Colors.white)),
+            icon: const Icon(Icons.layers, color: Colors.white, size: 20),
+            label: Text(_styleNames[_currentStyleIndex], style: const TextStyle(color: Colors.white, fontSize: 13)),
           ),
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.logout, size: 20),
             tooltip: 'Выйти из группы',
             onPressed: _logout,
           ),
