@@ -11,7 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import '../app_session.dart';
-import '../main.dart'; // ✅ Импорт для RestartWidget
+import 'home_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -594,8 +594,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await AppSession.clear();
     if (!mounted) return;
     
-    // ✅ Перезапускаем приложение для полной очистки ресурсов
-    RestartWidget.restartApp(context);
+    // ✅ Обычный переход на главный экран, без перезапуска приложения
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
+      (_) => false,
+    );
   }
 
   Future<void> _centerOnMe() async {
