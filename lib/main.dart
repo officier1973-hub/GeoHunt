@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui'; // ✅ Нужен для DartPluginRegistrant
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart'; // ✅ Нужен для фонового GPS
+import 'package:shared_preferences/shared_preferences.dart'; // ✅ Нужен для получения ID
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_session.dart';
 import 'screens/home_screen.dart';
