@@ -50,7 +50,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   int _currentStyleIndex = 0;
 
-  // ✅ Флаг офлайн-режима
+  // ✅ Флаг офлайн-режима (только для карты)
   bool _isOfflineMode = false;
 
   DateTime? _lastDbUpdate;
@@ -209,19 +209,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // ===============================================================
-  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (Обновлено)
+  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (ТОЛЬКО ДЛЯ КАРТЫ)
   // ===============================================================
   void _toggleOfflineMode(bool value) {
     setState(() {
       _isOfflineMode = value;
     });
 
+    // Переключаем режим подключения только для карты.
+    // Сеть (Supabase, события, SOS) продолжает работать.
     if (_isOfflineMode) {
       MapLibreNetwork.connectivityMode = ConnectivityMode.forceOffline;
-      _toast('Офлайн-режим включён. Карта использует только кэш.');
+      _toast('Карта переключена на офлайн-кэш.');
     } else {
       MapLibreNetwork.connectivityMode = ConnectivityMode.automatic;
-      _toast('Онлайн-режим восстановлен.');
+      _toast('Карта переключена на онлайн-режим.');
     }
   }
   // ===============================================================
@@ -1052,12 +1054,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onPressed: _toggleMySos,
           ),
           
-          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА
+          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА (ТОЛЬКО ДЛЯ КАРТЫ)
           Transform.scale(
             scale: 0.8,
             child: Switch(
               value: _isOfflineMode,
-              onChanged: (value) => _toggleOfflineMode(value),
+              onChanged: _toggleOfflineMode,
               activeColor: Colors.orange,
             ),
           ),
