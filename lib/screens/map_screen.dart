@@ -52,8 +52,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _currentStyleIndex = 0;
 
   bool _isOfflineMode = false;
-  
-  // ✅ Флаг для блокировки кнопки смены стиля во время загрузки
   bool _isSwitchingStyle = false;
 
   DateTime? _lastBearingUpdate;
@@ -209,6 +207,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _cleanupTimer?.cancel();
     _audioPlayer.dispose();
     _sirenPlayer.dispose();
+    
+    // ✅ Сбрасываем перехват URL при выходе, чтобы не ломать следующий запуск
+    MapLibreNetwork.urlTransform = null;
+    
     super.dispose();
   }
 
@@ -230,9 +232,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ===============================================================
-  // ✅ БЕЗОПАСНОЕ ПЕРЕКЛЮЧЕНИЕ СТИЛЕЙ (БЕЗ ПЕРЕСОЗДАНИЯ КАРТЫ)
-  // ===============================================================
   Future<void> _cycleStyle() async {
     if (_isSwitchingStyle) return;
     
@@ -244,7 +243,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     await _updateStyleLayers();
 
-    // Блокируем кнопку на 1 секунду, чтобы дать GPU отдохнуть
     await Future.delayed(const Duration(seconds: 1));
     if (mounted) setState(() => _isSwitchingStyle = false);
   }
@@ -254,13 +252,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (style == null) return;
 
     try {
-      // 1. Удаляем старые слои подложки
       try { await style.layers.remove('satellite_layer'); } catch (_) {}
       try { await style.sources.remove('satellite_source'); } catch (_) {}
       try { await style.layers.remove('roads_layer'); } catch (_) {}
       try { await style.layers.remove('labels_layer'); } catch (_) {}
 
-      // 2. Добавляем новые слои подложки
       if (_currentStyleIndex > 0) {
         await style.sources.add(RasterSource.tiles(
           id: 'satellite_source',
@@ -290,7 +286,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ));
       }
 
-      // 3. Принудительно перерисовываем маркеры ПОВЕРХ новых слоев
       try { await style.layers.remove('user_location_layer'); } catch (_) {}
       try { await style.layers.remove('others_layer'); } catch (_) {}
       try { await style.layers.remove('others_labels_layer'); } catch (_) {}
@@ -307,7 +302,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       debugPrint('Error updating style layers: $e');
     }
   }
-  // ===============================================================
 
   void _startCleanupTimer() {
     _cleanupTimer?.cancel();
@@ -599,6 +593,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     await AppSession.clear();
     if (!mounted) return;
+    
+    // Небольшая задержка, чтобы нативная карта успела корректно уничтожиться
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    
     Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const HomeScreen()), (_) => false);
   }
 
@@ -1081,7 +1080,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           ),
 
-          // ✅ Обновленная кнопка смены стиля с индикатором загрузки
           TextButton.icon(
             onPressed: _isSwitchingStyle ? null : _cycleStyle,
             icon: _isSwitchingStyle 
@@ -1100,7 +1098,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        // ✅ УДАЛЕН key: ValueKey(_currentStyleIndex) - карта больше не пересоздается!
+        // ✅ Форсируем полную перезагрузку виджета при смене пользователя
+        key: ValueKey(AppSession.hunterId ?? 'default_map'), 
         options: MapOptions(
           style: MapStyle.url(_baseStyleUrl),
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
