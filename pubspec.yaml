@@ -17,6 +17,8 @@ dependencies:
   shared_preferences: ^2.3.0
   flutter_compass: ^0.8.1
   audioplayers: ^6.0.0
+  flutter_background_service: ^5.0.10 # ✅ Добавлен пакет для фоновой работы
+  flutter_local_notifications: ^17.2.3   # ✅ Нужен для уведомления в шторке
 
 dev_dependencies:
   flutter_launcher_icons: ^0.14.1
