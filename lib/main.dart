@@ -35,9 +35,6 @@ void main() async {
   runApp(const GeoHuntApp());
 }
 
-// ===============================================================
-// ✅ ФОНОВАЯ СЛУЖБА
-// ===============================================================
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
 
@@ -96,6 +93,13 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
+  // ✅ Добавлен слушатель для остановки трекинга без остановки сервиса
+  service.on('stopTracking').listen((event) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('active_hunter_id');
+    print("BG Service: Tracking stopped.");
+  });
+
   final prefs = await SharedPreferences.getInstance();
   final hunterId = prefs.getString('active_hunter_id');
   if (hunterId == null) return;
@@ -111,17 +115,20 @@ void onStart(ServiceInstance service) async {
       accuracy: LocationAccuracy.high,
       distanceFilter: 5,
     ),
-  ).listen((position) {
+  ).listen((position) async {
+    // ✅ Проверяем ID перед отправкой, чтобы не отправлять данные после выхода
+    final currentHunterId = prefs.getString('active_hunter_id');
+    if (currentHunterId == null) return;
+
     Supabase.instance.client.from('hunters').update({
       'lat': position.latitude,
       'lon': position.longitude,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }).eq('id', hunterId).catchError((e) {
+    }).eq('id', currentHunterId).catchError((e) {
       print('BG location update error: $e');
     });
   });
 }
-// ===============================================================
 
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
