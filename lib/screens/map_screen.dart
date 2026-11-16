@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter_background_service/flutter_background_service.dart'; // ✅ Импорт службы
 import '../app_session.dart';
 import 'home_screen.dart';
 
@@ -50,11 +51,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   int _currentStyleIndex = 0;
 
-  // ✅ Флаг офлайн-режима (только для карты)
   bool _isOfflineMode = false;
-
-  DateTime? _lastDbUpdate;
-  static const _dbUpdateInterval = Duration(seconds: 30);
 
   DateTime? _lastBearingUpdate;
   static const _bearingUpdateInterval = Duration(milliseconds: 100);
@@ -162,6 +159,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
+    // ✅ ЗАПУСКАЕМ ФОНОВУЮ СЛУЖБУ
+    FlutterBackgroundService().startService();
+
     _audioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
@@ -192,7 +192,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _startCleanupTimer();
     _cleanupStaleData();
 
-    // ✅ Настраиваем перехват URL для офлайн-режима
     _setupUrlTransform();
   }
 
@@ -211,13 +210,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ===============================================================
-  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (БЛОКИРОВКА ТАЙЛОВ)
-  // ===============================================================
   void _setupUrlTransform() {
     MapLibreNetwork.urlTransform = (url, kind) {
       if (_isOfflineMode && kind == MapResourceKind.tile) {
-        // Возвращаем заведомо нерабочий URL, чтобы MapLibre использовал кэш
         return 'http://localhost:0/offline-blocked';
       }
       return url;
@@ -225,18 +220,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _toggleOfflineMode(bool value) {
-    setState(() {
-      _isOfflineMode = value;
-    });
+    setState(() => _isOfflineMode = value);
     if (_isOfflineMode) {
       _toast('Офлайн-режим: карта использует только кэш.');
     } else {
       _toast('Онлайн-режим карты.');
     }
-    // Перезагружаем стиль, чтобы применились изменения (опционально)
-    // _styleCtrl?.reload();
   }
-  // ===============================================================
 
   void _startCleanupTimer() {
     _cleanupTimer?.cancel();
@@ -520,6 +510,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (confirmed != true) return;
 
+    // ✅ ОСТАНАВЛИВАЕМ ФОНОВУЮ СЛУЖБУ
+    FlutterBackgroundService().invoke("stopService");
+
     final hunterId = AppSession.hunterId;
     if (hunterId != null) {
       try {
@@ -587,7 +580,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
 
     _applyBearing();
-    await _updateMyPositionInDb(newPos);
 
     if (_firstFix && _mapCtrl != null) {
       _firstFix = false;
@@ -609,24 +601,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       );
       _lastCenter = newPos;
       _lastZoom = 15;
-    }
-  }
-
-  Future<void> _updateMyPositionInDb(Geographic pos) async {
-    final hunterId = AppSession.hunterId;
-    if (hunterId == null) return;
-    final now = DateTime.now();
-    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < _dbUpdateInterval) return;
-    _lastDbUpdate = now;
-
-    try {
-      await Supabase.instance.client.from('hunters').update({
-        'lat': pos.lat,
-        'lon': pos.lon,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', hunterId);
-    } catch (e) {
-      debugPrint('Не удалось обновить позицию в БД: $e');
     }
   }
 
@@ -1064,7 +1038,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onPressed: _toggleMySos,
           ),
           
-          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА
           Transform.scale(
             scale: 0.8,
             child: Switch(
