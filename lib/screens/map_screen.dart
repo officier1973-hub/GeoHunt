@@ -21,7 +21,6 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   MapLibreMapController? _mapCtrl;
-  StyleController? _styleCtrl;
   StreamSubscription<geo.Position>? _posSub;
   StreamSubscription<CompassEvent>? _compassSub;
 
@@ -235,49 +234,49 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _updateStyleLayers() async {
-    final style = _styleCtrl;
-    if (style == null) return;
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
 
     try {
-      try { await style.removeLayer('satellite_layer'); } catch (_) {}
-      try { await style.removeSource('satellite_source'); } catch (_) {}
-      try { await style.removeLayer('roads_layer'); } catch (_) {}
-      try { await style.removeLayer('labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('satellite_layer'); } catch (_) {}
+      try { await ctrl.removeSource('satellite_source'); } catch (_) {}
+      try { await ctrl.removeLayer('roads_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('labels_layer'); } catch (_) {}
 
       if (_currentStyleIndex > 0) {
-        await style.addSource(RasterSource(
-          id: 'satellite_source',
+        await ctrl.addSource('satellite_source', RasterSourceProperties(
           tiles: [_satelliteTileUrl],
           tileSize: 256,
-          minZoom: 0,
-          maxZoom: 14,
+          minzoom: 0,
+          maxzoom: 14,
           attribution: '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
         ));
-        await style.addLayer(RasterLayer(
-          id: 'satellite_layer',
-          sourceId: 'satellite_source',
-        ));
+        await ctrl.addRasterLayer('satellite_source', 'satellite_layer', RasterLayerProperties());
       }
 
       if (_currentStyleIndex == 2) {
-        await style.addLayer(LineLayer(
-          id: 'roads_layer', sourceId: 'openmaptiles', sourceLayer: 'streets',
-          lineColor: '#FFFFFF', lineWidth: 1.5, lineOpacity: 0.8,
-        ));
-        await style.addLayer(SymbolLayer(
-          id: 'labels_layer', sourceId: 'openmaptiles', sourceLayer: 'place',
-          textField: '{name}', textSize: 13,
-          textColor: '#FFFFFF', textHaloColor: '#000000',
-          textHaloWidth: 1.8, textFont: ['Noto Sans Regular'],
+        await ctrl.addLineLayer('openmaptiles', 'roads_layer', LineLayerProperties(
+          lineColor: '#FFFFFF',
+          lineWidth: 1.5,
+          lineOpacity: 0.8,
+        ), sourceLayer: 'streets');
+
+        await ctrl.addSymbolLayer('openmaptiles', 'labels_layer', SymbolLayerProperties(
+          textField: '{name}',
+          textSize: 13,
+          textColor: '#FFFFFF',
+          textHaloColor: '#000000',
+          textHaloWidth: 1.8,
+          textFont: ['Noto Sans Regular'],
           textAllowOverlap: false,
-        ));
+        ), sourceLayer: 'place');
       }
 
-      try { await style.removeLayer('user_location_layer'); } catch (_) {}
-      try { await style.removeLayer('others_layer'); } catch (_) {}
-      try { await style.removeLayer('others_labels_layer'); } catch (_) {}
-      try { await style.removeLayer('events_icons_layer'); } catch (_) {}
-      try { await style.removeLayer('events_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('others_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('events_icons_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('events_labels_layer'); } catch (_) {}
       
       _userLayerReady = false;
 
@@ -666,8 +665,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onMapCreated(MapLibreMapController ctrl) => _mapCtrl = ctrl;
 
-  Future<void> _onStyleLoaded(StyleController style) async {
-    _styleCtrl = style;
+  Future<void> _onStyleLoaded() async {
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
+
     _userLayerReady = false;
     _userUpdateInProgress = false;
     _userUpdatePending = false;
@@ -675,16 +676,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     try {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
-      await style.addImage('user_arrow', arrowBytes.buffer.asUint8List());
+      await ctrl.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
       final spottedBytes = await _createMapIcon(icon: Icons.remove_red_eye, backgroundColor: const Color(0xFFFFC107));
-      await style.addImage('event_spotted', spottedBytes);
+      await ctrl.addImage('event_spotted', spottedBytes);
 
       final woundedBytes = await _createMapIcon(icon: Icons.water_drop, backgroundColor: const Color(0xFFE64A19));
-      await style.addImage('event_wounded', woundedBytes);
+      await ctrl.addImage('event_wounded', woundedBytes);
 
       final harvestedBytes = await _createMapIcon(icon: Icons.track_changes, backgroundColor: const Color(0xFF388E3C));
-      await style.addImage('event_harvested', harvestedBytes);
+      await ctrl.addImage('event_harvested', harvestedBytes);
     } catch (e) {
       debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
     }
@@ -693,9 +694,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _updateUserLocationLayer() async {
-    final style = _styleCtrl;
+    final ctrl = _mapCtrl;
     final pos = _myPos;
-    if (style == null || pos == null) return;
+    if (ctrl == null || pos == null) return;
     if (_userUpdateInProgress) {
       _userUpdatePending = true;
       return;
@@ -710,15 +711,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         'properties': {'bearing': bearing},
       };
 
-      try { await style.removeSource('user_location_source'); } catch (_) {}
-      await style.addGeoJsonSource('user_location_source', geoJsonData);
+      try { await ctrl.removeSource('user_location_source'); } catch (_) {}
+      await ctrl.addGeoJsonSource('user_location_source', geoJsonData);
 
       if (!_userLayerReady) {
-        await style.addLayer(SymbolLayer(
-          id: 'user_location_layer', sourceId: 'user_location_source',
-          iconImage: 'user_arrow', iconSize: 1.0,
-          iconRotate: ['get', 'bearing'], iconRotationAlignment: 'map',
-          iconAllowOverlap: true, iconIgnorePlacement: true,
+        await ctrl.addSymbolLayer('user_location_source', 'user_location_layer', SymbolLayerProperties(
+          iconImage: 'user_arrow',
+          iconSize: 1.0,
+          iconRotate: ['get', 'bearing'],
+          iconRotationAlignment: 'map',
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
         ));
         _userLayerReady = true;
       }
@@ -734,13 +737,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _updateOthersLayer() async {
-    final style = _styleCtrl;
-    if (style == null) return;
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
 
     try {
-      try { await style.removeLayer('others_labels_layer'); } catch (_) {}
-      try { await style.removeLayer('others_layer'); } catch (_) {}
-      try { await style.removeSource('others_source'); } catch (_) {}
+      try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('others_layer'); } catch (_) {}
+      try { await ctrl.removeSource('others_source'); } catch (_) {}
 
       if (_otherHunters.isEmpty) return;
       final now = DateTime.now().toUtc();
@@ -791,23 +794,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }).toList();
 
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
-      await style.addGeoJsonSource('others_source', featureCollection);
+      await ctrl.addGeoJsonSource('others_source', featureCollection);
 
-      await style.addLayer(CircleLayer(
-        id: 'others_layer', sourceId: 'others_source',
-        circleColor: ['get', 'color'], 
-        circleRadius: ['get', 'radius'], 
-        circleStrokeColor: '#FFFFFF', 
-        circleStrokeWidth: ['get', 'strokeWidth'], 
+      await ctrl.addCircleLayer('others_source', 'others_layer', CircleLayerProperties(
+        circleColor: ['get', 'color'],
+        circleRadius: ['get', 'radius'],
+        circleStrokeColor: '#FFFFFF',
+        circleStrokeWidth: ['get', 'strokeWidth'],
       ));
 
-      await style.addLayer(SymbolLayer(
-        id: 'others_labels_layer', sourceId: 'others_source',
-        textField: ['get', 'label'], textSize: 12,
-        textColor: '#FFFFFF', textHaloColor: '#000000',
-        textHaloWidth: 2, textFont: ['Noto Sans Regular'],
-        textAllowOverlap: false, textOffset: [0, -1.5],
-        minZoom: _labelsMinZoom,
+      await ctrl.addSymbolLayer('others_source', 'others_labels_layer', SymbolLayerProperties(
+        textField: ['get', 'label'],
+        textSize: 12,
+        textColor: '#FFFFFF',
+        textHaloColor: '#000000',
+        textHaloWidth: 2,
+        textFont: ['Noto Sans Regular'],
+        textAllowOverlap: false,
+        textOffset: [0, -1.5],
+        textMinZoom: _labelsMinZoom,
       ));
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
@@ -815,13 +820,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _updateEventsLayer() async {
-    final style = _styleCtrl;
-    if (style == null) return;
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
 
     try {
-      try { await style.removeLayer('events_labels_layer'); } catch (_) {}
-      try { await style.removeLayer('events_icons_layer'); } catch (_) {}
-      try { await style.removeSource('events_source'); } catch (_) {}
+      try { await ctrl.removeLayer('events_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('events_icons_layer'); } catch (_) {}
+      try { await ctrl.removeSource('events_source'); } catch (_) {}
 
       if (_events.isEmpty) return;
       final now = DateTime.now().toUtc();
@@ -866,23 +871,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }).toList();
 
       final featureCollection = {'type': 'FeatureCollection', 'features': features};
-      await style.addGeoJsonSource('events_source', featureCollection);
+      await ctrl.addGeoJsonSource('events_source', featureCollection);
 
-      await style.addLayer(SymbolLayer(
-        id: 'events_icons_layer', sourceId: 'events_source',
+      await ctrl.addSymbolLayer('events_source', 'events_icons_layer', SymbolLayerProperties(
         iconImage: ['get', 'icon'],
         iconSize: 0.6,
-        iconAllowOverlap: true, 
+        iconAllowOverlap: true,
         iconIgnorePlacement: true,
       ));
 
-      await style.addLayer(SymbolLayer(
-        id: 'events_labels_layer', sourceId: 'events_source',
-        textField: ['get', 'label'], textSize: 11,
-        textColor: '#FFFFFF', textHaloColor: '#000000',
-        textHaloWidth: 2, textFont: ['Noto Sans Regular'],
-        textAllowOverlap: false, textOffset: [0, 1.5],
-        minZoom: _labelsMinZoom,
+      await ctrl.addSymbolLayer('events_source', 'events_labels_layer', SymbolLayerProperties(
+        textField: ['get', 'label'],
+        textSize: 11,
+        textColor: '#FFFFFF',
+        textHaloColor: '#000000',
+        textHaloWidth: 2,
+        textFont: ['Noto Sans Regular'],
+        textAllowOverlap: false,
+        textOffset: [0, 1.5],
+        textMinZoom: _labelsMinZoom,
       ));
 
     } catch (e) {
@@ -1088,16 +1095,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           zoom: zoom,
         ),
         onMapCreated: _onMapCreated,
-        onStyleLoadedCallback: () => _onStyleLoaded(_styleCtrl!),
-        // ✅ Ключевой параметр для решения проблемы с черным экраном
+        onStyleLoadedCallback: _onStyleLoaded,
         translucentTextureSurface: true,
-        // Включаем все жесты
         trackCameraPosition: true,
         onCameraIdle: _onCameraMoveEnd,
-        // Отключаем встроенный компас, так как мы используем свой
         compassEnabled: false,
-        // Включаем масштаб
-        // (в maplibre_gl нет прямого параметра для отключения жестов, они включены по умолчанию)
       ),
       
       floatingActionButton: Column(
