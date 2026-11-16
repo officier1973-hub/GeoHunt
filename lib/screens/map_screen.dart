@@ -566,7 +566,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (confirmed != true) return;
 
-    // ✅ Отправляем сигнал остановки трекинга (сервис не умирает, поэтому движок не падает)
     FlutterBackgroundService().invoke("stopTracking");
 
     final hunterId = AppSession.hunterId;
@@ -718,7 +717,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (!_userLayerReady) {
         await ctrl.addSymbolLayer('user_location_source', 'user_location_layer', SymbolLayerProperties(
           iconImage: 'user_arrow',
-          iconSize: 1.0,
+          iconSize: 2.5, // ✅ Увеличен размер стрелки
           iconRotate: ['get', 'bearing'],
           iconRotationAlignment: 'map',
           iconAllowOverlap: true,
@@ -762,16 +761,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         if (isSos) {
           color = '#FF0000'; 
-          radius = 14.0;      
-          strokeWidth = 4.0;
+          radius = 18.0;      // ✅ Увеличен радиус для SOS
+          strokeWidth = 5.0;
         } else if (isStale) {
           color = '#9E9E9E'; 
-          radius = 9.0;
-          strokeWidth = 2.0;
+          radius = 12.0;      // ✅ Увеличен стандартный радиус
+          strokeWidth = 3.0;
         } else {
           color = (h['color'] ?? '#1976D2').toString();
-          radius = 9.0;
-          strokeWidth = 2.0;
+          radius = 12.0;      // ✅ Увеличен стандартный радиус
+          strokeWidth = 3.0;
         }
 
         String label = name;
@@ -798,7 +797,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await ctrl.addGeoJsonSource('others_source', featureCollection);
 
       await ctrl.addCircleLayer('others_source', 'others_layer', CircleLayerProperties(
-        circleColor: ['get', 'color'],
+        circleColor: ['to-color', ['get', 'color']], // ✅ Исправлено на to-color
         circleRadius: ['get', 'radius'],
         circleStrokeColor: '#FFFFFF',
         circleStrokeWidth: ['get', 'strokeWidth'],
@@ -812,7 +811,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textHaloWidth: 2,
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
-        textOffset: [0, -1.5],
+        textOffset: [0, -1.8],
       ), minzoom: _labelsMinZoom);
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
@@ -875,7 +874,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       await ctrl.addSymbolLayer('events_source', 'events_icons_layer', SymbolLayerProperties(
         iconImage: ['get', 'icon'],
-        iconSize: 0.6,
+        iconSize: 1.5, // ✅ Увеличен размер иконок событий
         iconAllowOverlap: true,
         iconIgnorePlacement: true,
       ));
@@ -888,7 +887,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textHaloWidth: 2,
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
-        textOffset: [0, 1.5],
+        textOffset: [0, 2.0],
       ), minzoom: _labelsMinZoom);
 
     } catch (e) {
@@ -1095,7 +1094,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         onMapCreated: _onMapCreated,
         onStyleLoadedCallback: _onStyleLoaded,
-        // ✅ УБРАНО translucentTextureSurface: true, чтобы не было белого экрана
         trackCameraPosition: true,
         onCameraIdle: _onCameraMoveEnd,
         compassEnabled: false,
