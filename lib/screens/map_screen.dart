@@ -191,6 +191,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _startFreshnessTimer();
     _startCleanupTimer();
     _cleanupStaleData();
+
+    // ✅ Настраиваем перехват URL для офлайн-режима
+    _setupUrlTransform();
   }
 
   @override
@@ -209,22 +212,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // ===============================================================
-  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (ТОЛЬКО ДЛЯ КАРТЫ)
+  // ✅ ПЕРЕКЛЮЧЕНИЕ ОФЛАЙН-РЕЖИМА (БЛОКИРОВКА ТАЙЛОВ)
   // ===============================================================
+  void _setupUrlTransform() {
+    MapLibreNetwork.urlTransform = (url, kind) {
+      if (_isOfflineMode && kind == MapResourceKind.tile) {
+        // Возвращаем заведомо нерабочий URL, чтобы MapLibre использовал кэш
+        return 'http://localhost:0/offline-blocked';
+      }
+      return url;
+    };
+  }
+
   void _toggleOfflineMode(bool value) {
     setState(() {
       _isOfflineMode = value;
     });
-
-    // Переключаем режим подключения только для карты.
-    // Сеть (Supabase, события, SOS) продолжает работать.
     if (_isOfflineMode) {
-      MapLibreNetwork.connectivityMode = ConnectivityMode.forceOffline;
-      _toast('Карта переключена на офлайн-кэш.');
+      _toast('Офлайн-режим: карта использует только кэш.');
     } else {
-      MapLibreNetwork.connectivityMode = ConnectivityMode.automatic;
-      _toast('Карта переключена на онлайн-режим.');
+      _toast('Онлайн-режим карты.');
     }
+    // Перезагружаем стиль, чтобы применились изменения (опционально)
+    // _styleCtrl?.reload();
   }
   // ===============================================================
 
@@ -1054,7 +1064,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onPressed: _toggleMySos,
           ),
           
-          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА (ТОЛЬКО ДЛЯ КАРТЫ)
+          // ✅ ПЕРЕКЛЮЧАТЕЛЬ ОФЛАЙН-РЕЖИМА
           Transform.scale(
             scale: 0.8,
             child: Switch(
