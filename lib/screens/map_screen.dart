@@ -9,7 +9,7 @@ import 'package:geolocator/geolocator.dart' as geo;
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:flutter_background_service/flutter_background_service.dart'; // ✅ Импорт службы
+import 'package:flutter_background_service/flutter_background_service.dart';
 import '../app_session.dart';
 import 'home_screen.dart';
 
@@ -52,6 +52,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _currentStyleIndex = 0;
 
   bool _isOfflineMode = false;
+  
+  // ✅ Флаг для блокировки кнопки смены стиля во время загрузки
+  bool _isSwitchingStyle = false;
 
   DateTime? _lastBearingUpdate;
   static const _bearingUpdateInterval = Duration(milliseconds: 100);
@@ -159,7 +162,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // ✅ ЗАПУСКАЕМ ФОНОВУЮ СЛУЖБУ
     FlutterBackgroundService().startService();
 
     _audioPlayer.setAudioContext(AudioContext(
@@ -227,6 +229,85 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _toast('Онлайн-режим карты.');
     }
   }
+
+  // ===============================================================
+  // ✅ БЕЗОПАСНОЕ ПЕРЕКЛЮЧЕНИЕ СТИЛЕЙ (БЕЗ ПЕРЕСОЗДАНИЯ КАРТЫ)
+  // ===============================================================
+  Future<void> _cycleStyle() async {
+    if (_isSwitchingStyle) return;
+    
+    setState(() => _isSwitchingStyle = true);
+    _rememberCamera();
+
+    final nextIndex = (_currentStyleIndex + 1) % _styleNames.length;
+    setState(() => _currentStyleIndex = nextIndex);
+
+    await _updateStyleLayers();
+
+    // Блокируем кнопку на 1 секунду, чтобы дать GPU отдохнуть
+    await Future.delayed(const Duration(seconds: 1));
+    if (mounted) setState(() => _isSwitchingStyle = false);
+  }
+
+  Future<void> _updateStyleLayers() async {
+    final style = _styleCtrl;
+    if (style == null) return;
+
+    try {
+      // 1. Удаляем старые слои подложки
+      try { await style.layers.remove('satellite_layer'); } catch (_) {}
+      try { await style.sources.remove('satellite_source'); } catch (_) {}
+      try { await style.layers.remove('roads_layer'); } catch (_) {}
+      try { await style.layers.remove('labels_layer'); } catch (_) {}
+
+      // 2. Добавляем новые слои подложки
+      if (_currentStyleIndex > 0) {
+        await style.sources.add(RasterSource.tiles(
+          id: 'satellite_source',
+          tiles: [_satelliteTileUrl],
+          tileSize: 256,
+          minZoom: 0,
+          maxZoom: 14,
+          attribution: '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+        ));
+        await style.layers.add(RasterStyleLayer(
+          id: 'satellite_layer',
+          sourceId: 'satellite_source',
+        ));
+      }
+
+      if (_currentStyleIndex == 2) {
+        await style.layers.add(LineStyleLayer(
+          id: 'roads_layer', sourceId: 'openmaptiles', sourceLayerId: 'streets',
+          color: Expression.literal(const Color(0xFFFFFFFF)), width: Expression.literal(1.5), opacity: Expression.literal(0.8),
+        ));
+        await style.layers.add(SymbolStyleLayer(
+          id: 'labels_layer', sourceId: 'openmaptiles', sourceLayerId: 'place',
+          textField: Expression.literal('{name}'), textSize: Expression.literal(13),
+          textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
+          textHaloWidth: Expression.literal(1.8), textFont: Expression.literal(const ['Noto Sans Regular']),
+          textAllowOverlap: Expression.literal(false),
+        ));
+      }
+
+      // 3. Принудительно перерисовываем маркеры ПОВЕРХ новых слоев
+      try { await style.layers.remove('user_location_layer'); } catch (_) {}
+      try { await style.layers.remove('others_layer'); } catch (_) {}
+      try { await style.layers.remove('others_labels_layer'); } catch (_) {}
+      try { await style.layers.remove('events_icons_layer'); } catch (_) {}
+      try { await style.layers.remove('events_labels_layer'); } catch (_) {}
+      
+      _userLayerReady = false;
+
+      await _updateUserLocationLayer();
+      await _updateOthersLayer();
+      await _updateEventsLayer();
+
+    } catch (e) {
+      debugPrint('Error updating style layers: $e');
+    }
+  }
+  // ===============================================================
 
   void _startCleanupTimer() {
     _cleanupTimer?.cancel();
@@ -491,11 +572,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _onCameraMoveEnd(MapEventCameraMoveEnd event) => _rememberCamera();
 
-  void _cycleStyle() {
-    _rememberCamera();
-    setState(() => _currentStyleIndex = (_currentStyleIndex + 1) % _styleNames.length);
-  }
-
   Future<void> _logout() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -510,7 +586,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (confirmed != true) return;
 
-    // ✅ ОСТАНАВЛИВАЕМ ФОНОВУЮ СЛУЖБУ
     FlutterBackgroundService().invoke("stopService");
 
     final hunterId = AppSession.hunterId;
@@ -629,48 +704,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
     }
 
-    if (_currentStyleIndex > 0) {
-      try {
-        const sourceId = 'satellite_source';
-        final rasterSource = RasterSource.tiles(
-          id: sourceId,
-          tiles: [_satelliteTileUrl],
-          tileSize: 256,
-          minZoom: 0,
-          maxZoom: 14,
-          attribution: '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
-        );
-        await style.sources.add(rasterSource);
-        await style.layers.add(RasterStyleLayer(id: 'satellite_layer', sourceId: sourceId));
-      } catch (e) {
-        debugPrint('Ошибка добавления растрового слоя: $e');
-      }
-    }
-
-    if (_currentStyleIndex == 2) {
-      try {
-        await style.layers.add(LineStyleLayer(
-          id: 'roads_layer', sourceId: 'openmaptiles', sourceLayerId: 'streets',
-          color: Expression.literal(const Color(0xFFFFFFFF)), width: Expression.literal(1.5), opacity: Expression.literal(0.8),
-        ));
-      } catch (e) { debugPrint('Ошибка добавления слоя дорог: $e'); }
-
-      try {
-        await style.layers.add(SymbolStyleLayer(
-          id: 'labels_layer', sourceId: 'openmaptiles', sourceLayerId: 'place',
-          textField: Expression.literal('{name}'), textSize: Expression.literal(13),
-          textColor: Expression.literal(const Color(0xFFFFFFFF)), textHaloColor: Expression.literal(const Color(0xFF000000)),
-          textHaloWidth: Expression.literal(1.8), textFont: Expression.literal(const ['Noto Sans Regular']),
-          textAllowOverlap: Expression.literal(false),
-        ));
-      } catch (e) { debugPrint('Ошибка добавления слоя подписей: $e'); }
-    }
-
-    try { await style.layers.remove('user_location_layer'); } catch (_) {}
-    _userLayerReady = false; 
-    await _updateUserLocationLayer();
-    await _updateOthersLayer();
-    await _updateEventsLayer();
+    await _updateStyleLayers();
   }
 
   Future<void> _updateUserLocationLayer() async {
@@ -1047,10 +1081,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           ),
 
+          // ✅ Обновленная кнопка смены стиля с индикатором загрузки
           TextButton.icon(
-            onPressed: _cycleStyle,
-            icon: const Icon(Icons.layers, color: Colors.white, size: 20),
-            label: Text(_styleNames[_currentStyleIndex], style: const TextStyle(color: Colors.white, fontSize: 13)),
+            onPressed: _isSwitchingStyle ? null : _cycleStyle,
+            icon: _isSwitchingStyle 
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.layers, color: Colors.white, size: 20),
+            label: Text(
+              _isSwitchingStyle ? '...' : _styleNames[_currentStyleIndex], 
+              style: const TextStyle(color: Colors.white, fontSize: 13)
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.logout, size: 20),
@@ -1060,7 +1100,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        key: ValueKey(_currentStyleIndex),
+        // ✅ УДАЛЕН key: ValueKey(_currentStyleIndex) - карта больше не пересоздается!
         options: MapOptions(
           style: MapStyle.url(_baseStyleUrl),
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
