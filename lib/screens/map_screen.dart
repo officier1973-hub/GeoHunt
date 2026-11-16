@@ -11,7 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import '../app_session.dart';
-import 'home_screen.dart';
+import '../main.dart'; // ✅ Импортируем RestartWidget для перезапуска
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -206,8 +206,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _freshnessTimer?.cancel();
     _cleanupTimer?.cancel();
     
-    // ✅ Критически важно: освобождаем нативные ресурсы карты
-    _mapCtrl?.dispose(); 
+    // ✅ УБРАН вызов _mapCtrl?.dispose(), так как метода нет
     
     _audioPlayer.dispose();
     _sirenPlayer.dispose();
@@ -597,10 +596,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await AppSession.clear();
     if (!mounted) return;
     
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (!mounted) return;
-    
-    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const HomeScreen()), (_) => false);
+    // ✅ Перезапускаем приложение для полной очистки ресурсов и предотвращения черных экранов
+    RestartWidget.restartApp(context);
   }
 
   Future<void> _centerOnMe() async {
