@@ -1,11 +1,8 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui'; // Нужен для DartPluginRegistrant
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_session.dart';
 import 'screens/home_screen.dart';
@@ -14,7 +11,10 @@ import 'screens/map_screen.dart';
 const supabaseUrl = 'https://qucrbwsudcwqetcullsp.supabase.co';
 const supabaseAnonKey = 'sb_publishable_CVhiWocVbOe54-Bleexnpg_9meljsC8';
 
-Future<void> main() async {
+// ✅ Глобальный ключ для перезапуска приложения
+final GlobalKey<RestartWidgetState> appRestartKey = GlobalKey<RestartWidgetState>();
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   await AppSession.load();
@@ -35,9 +35,34 @@ Future<void> main() async {
   runApp(const GeoHuntApp());
 }
 
-// ===============================================================
-// ✅ НАСТРОЙКА ФОНОВОЙ СЛУЖБЫ
-// ===============================================================
+// ✅ Виджет-обертка для перезапуска
+class RestartWidget extends StatefulWidget {
+  const RestartWidget({super.key, required this.child});
+  final Widget child;
+
+  static void restartApp(BuildContext context) {
+    context.findAncestorStateOfType<RestartWidgetState>()?.restartApp();
+  }
+
+  @override
+  State<RestartWidget> createState() => RestartWidgetState();
+}
+
+class RestartWidgetState extends State<RestartWidget> {
+  Key _key = UniqueKey();
+
+  void restartApp() {
+    setState(() {
+      _key = UniqueKey();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return KeyedSubtree(key: _key, child: widget.child);
+  }
+}
+
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
 
@@ -58,7 +83,7 @@ Future<void> initializeService() async {
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
-      autoStart: false, // Запускаем вручную из MapScreen
+      autoStart: false,
       isForegroundMode: true,
       notificationChannelId: 'geohunt_channel',
       initialNotificationTitle: 'GeoHunt',
@@ -96,26 +121,22 @@ void onStart(ServiceInstance service) async {
     service.stopSelf();
   });
 
-  // Получаем ID охотника из настроек
   final prefs = await SharedPreferences.getInstance();
   final hunterId = prefs.getString('active_hunter_id');
   if (hunterId == null) return;
 
-  // Инициализируем Supabase в фоновом потоке
   try {
     Supabase.instance.client;
   } catch (_) {
     await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   }
 
-  // Запускаем GPS в фоне
   Geolocator.getPositionStream(
     locationSettings: const LocationSettings(
       accuracy: LocationAccuracy.high,
       distanceFilter: 5,
     ),
   ).listen((position) {
-    // Отправляем координаты в БД каждые 30 секунд (или как придет GPS)
     Supabase.instance.client.from('hunters').update({
       'lat': position.latitude,
       'lon': position.longitude,
@@ -125,24 +146,26 @@ void onStart(ServiceInstance service) async {
     });
   });
 }
-// ===============================================================
 
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'GeoHunt',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2E4A2C),
-          brightness: Brightness.dark,
+    return RestartWidget(
+      key: appRestartKey,
+      child: MaterialApp(
+        title: 'GeoHunt',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF2E4A2C),
+            brightness: Brightness.dark,
+          ),
         ),
+        home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
       ),
-      home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
     );
   }
 }
