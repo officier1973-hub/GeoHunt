@@ -205,10 +205,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
     _cleanupTimer?.cancel();
+    
+    // ✅ Критически важно: освобождаем нативные ресурсы карты
+    _mapCtrl?.dispose(); 
+    
     _audioPlayer.dispose();
     _sirenPlayer.dispose();
     
-    // ✅ Сбрасываем перехват URL при выходе, чтобы не ломать следующий запуск
     MapLibreNetwork.urlTransform = null;
     
     super.dispose();
@@ -594,7 +597,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await AppSession.clear();
     if (!mounted) return;
     
-    // Небольшая задержка, чтобы нативная карта успела корректно уничтожиться
     await Future.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
     
@@ -1098,7 +1100,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        // ✅ Форсируем полную перезагрузку виджета при смене пользователя
         key: ValueKey(AppSession.hunterId ?? 'default_map'), 
         options: MapOptions(
           style: MapStyle.url(_baseStyleUrl),
