@@ -73,6 +73,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   final AudioPlayer _audioPlayer = AudioPlayer();
 
+  // ✅ Уникальный ключ для принудительного пересоздания карты при каждом входе
+  final Key _mapKey = UniqueKey();
+
   static const String _satelliteTileUrl =
       'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
   static const String _baseStyleUrl =
@@ -594,7 +597,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await AppSession.clear();
     if (!mounted) return;
     
-    // ✅ Обычный переход на главный экран, без перезапуска приложения
+    // ✅ Жесткая замена экрана на главный
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (_) => false,
@@ -1098,7 +1101,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ],
       ),
       body: MapLibreMap(
-        key: ValueKey(AppSession.hunterId ?? 'default_map'), 
+        key: _mapKey, // ✅ Принудительно уникальный ключ
         options: MapOptions(
           style: MapStyle.url(_baseStyleUrl),
           initCamera: CameraUpdate.position(center: center, zoom: zoom),
