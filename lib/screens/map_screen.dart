@@ -812,7 +812,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
         textOffset: [0, -1.5],
-        textMinZoom: _labelsMinZoom,
+        minZoom: _labelsMinZoom, // ✅ Исправлено на minZoom
       ));
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
@@ -889,7 +889,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         textFont: ['Noto Sans Regular'],
         textAllowOverlap: false,
         textOffset: [0, 1.5],
-        textMinZoom: _labelsMinZoom,
+        minZoom: _labelsMinZoom, // ✅ Исправлено на minZoom
       ));
 
     } catch (e) {
