@@ -37,11 +37,13 @@
             </intent-filter>
         </activity>
 
+        <!-- ✅ Ключевое изменение: android:stopWithTask="true" -->
         <service
             android:name="id.flutter.flutter_background_service.BackgroundService"
             android:foregroundServiceType="location"
             android:exported="false"
-            tools:replace="android:exported" />
+            android:stopWithTask="true"
+            tools:replace="android:exported,android:stopWithTask" />
 
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
