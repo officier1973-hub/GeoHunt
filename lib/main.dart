@@ -89,11 +89,17 @@ void onStart(ServiceInstance service) async {
     });
   }
 
+  // ✅ 1. Обработка ручной остановки сервиса (кнопка "Выйти" или "Стоп")
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
 
-  // ✅ Добавлен слушатель для остановки трекинга без остановки сервиса
+  // ✅ 2. Обработка принудительного закрытия приложения (свайп из недавних)
+  service.on('onTaskRemoved').listen((event) {
+    service.stopSelf();
+  });
+
+  // ✅ 3. Обработка остановки трекинга без остановки сервиса (при выходе из группы)
   service.on('stopTracking').listen((event) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('active_hunter_id');
@@ -116,7 +122,6 @@ void onStart(ServiceInstance service) async {
       distanceFilter: 5,
     ),
   ).listen((position) async {
-    // ✅ Проверяем ID перед отправкой, чтобы не отправлять данные после выхода
     final currentHunterId = prefs.getString('active_hunter_id');
     if (currentHunterId == null) return;
 
