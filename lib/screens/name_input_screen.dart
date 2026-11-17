@@ -50,96 +50,58 @@ class _NameInputScreenState extends State<NameInputScreen> {
       _saving = true;
       _error = null;
     });
-
-    final supabase = Supabase.instance.client;
-    final color = _colorForRole(_selectedRole);
-
     try {
-      // 1. Пытаемся создать нового охотника
-      final res = await supabase.from('hunters').insert({
-        'group_id': widget.groupId,
-        'name': name,
-        'role': _selectedRole,
-        'color': color,
-        'device_id': AppSession.deviceId, // ✅ Отправляем ID устройства
-      }).select('id, name, role').single();
-
-      await _finishLogin(res['id'], res['name'], res['role']);
-      return;
-
-    } on PostgrestException catch (e) {
-      // 2. Если имя занято (ошибка 23505)
-      if (e.code == '23505') {
-        // Ищем существующую запись с таким именем
-        final existing = await supabase
-            .from('hunters')
-            .select('id, device_id, updated_at')
-            .eq('group_id', widget.groupId)
-            .ilike('name', name)
-            .maybeSingle();
-
-        if (existing != null) {
-          final existingDeviceId = existing['device_id'];
-          final updatedAtRaw = existing['updated_at'];
-          
-          bool isMyDevice = existingDeviceId == AppSession.deviceId;
-          bool isStale = false;
-
-          if (updatedAtRaw != null) {
-            final dt = DateTime.tryParse(updatedAtRaw.toString())?.toUtc();
-            if (dt != null) {
-              isStale = DateTime.now().toUtc().difference(dt).inHours >= 2;
-            }
-          }
-
-          // Если это наше устройство ИЛИ запись устарела (висит > 2 часов)
-          if (isMyDevice || isStale) {
-            // «Забираем» имя обратно
-            final updateRes = await supabase.from('hunters').update({
-              'device_id': AppSession.deviceId,
-              'role': _selectedRole,
-              'color': color,
-              'updated_at': DateTime.now().toUtc().toIso8601String(),
-            }).eq('id', existing['id']).select('id, name, role').single();
-
-            await _finishLogin(updateRes['id'], updateRes['name'], updateRes['role']);
-            return;
-          } else {
-            setState(() {
-              _error = 'Имя «$name» недавно занял другой охотник. Выберите другое.';
-              _saving = false;
-            });
-            return;
-          }
-        }
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) {
+        setState(() => _error = 'Ошибка авторизации. Попробуйте перезапустить приложение.');
+        _saving = false;
+        return;
       }
 
-      // Другие ошибки
+      final res = await Supabase.instance.client
+          .from('hunters')
+          .insert({
+            'group_id': widget.groupId,
+            'name': name,
+            'role': _selectedRole,
+            'color': _colorForRole(_selectedRole),
+            'user_id': userId, // ✅ Сохраняем user_id
+          })
+          .select('id, name, role')
+          .single();
+      await AppSession.save(
+        groupId: widget.groupId,
+        groupCode: widget.groupCode,
+        hunterId: res['id'] as String,
+        hunterName: res['name'] as String,
+        hunterRole: (res['role'] as String?) ?? _selectedRole,
+        userId: userId, // ✅ Сохраняем в сессии
+      );
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MapScreen()),
+        (_) => false,
+      );
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      if (e.code == '23505') {
+        setState(() {
+          _error = 'Имя «$name» уже занято в этой группе. Выберите другое.';
+          _saving = false;
+        });
+        return;
+      }
       setState(() {
         _error = 'Не удалось сохранить: ${e.message}';
         _saving = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _error = 'Ошибка: $e';
+        _error = 'Не удалось сохранить: $e';
         _saving = false;
       });
     }
-  }
-
-  Future<void> _finishLogin(dynamic id, dynamic name, dynamic role) async {
-    await AppSession.save(
-      groupId: widget.groupId,
-      groupCode: widget.groupCode,
-      hunterId: id as String,
-      hunterName: name as String,
-      hunterRole: (role as String?) ?? _selectedRole,
-    );
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const MapScreen()),
-      (_) => false,
-    );
   }
 
   @override
@@ -183,7 +145,6 @@ class _NameInputScreenState extends State<NameInputScreen> {
                   labelText: 'Имя',
                   border: const OutlineInputBorder(),
                   errorText: _error,
-                  errorMaxLines: 2,
                 ),
                 textInputAction: TextInputAction.done,
               ),
