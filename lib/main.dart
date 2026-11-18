@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_session.dart';
+import 'app_settings.dart'; // ✅ Импорт настроек
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
 
@@ -18,7 +19,6 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 
-  // ✅ Анонимный вход (создает auth.uid() для RLS)
   final session = Supabase.instance.client.auth.currentSession;
   if (session == null) {
     try {
@@ -29,6 +29,7 @@ void main() async {
   }
 
   await AppSession.load();
+  await AppSettings.load(); // ✅ Загружаем настройки
   await initializeService();
 
   if (AppSession.hasSession) {
@@ -39,17 +40,12 @@ void main() async {
           .eq('id', AppSession.hunterId!)
           .maybeSingle();
       if (res == null) await AppSession.clear();
-    } catch (_) {
-      // Если произошла сетевая ошибка, оставляем сессию, пусть приложение откроется
-    }
+    } catch (_) {}
   }
 
   runApp(const GeoHuntApp());
 }
 
-// ===============================================================
-// ✅ ФОНОВАЯ СЛУЖБА
-// ===============================================================
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
 
@@ -104,17 +100,14 @@ void onStart(ServiceInstance service) async {
     });
   }
 
-  // Остановка сервиса (кнопка Выйти или свайп)
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
 
-  // Остановка при свайпе приложения из недавних
   service.on('onTaskRemoved').listen((event) {
     service.stopSelf();
   });
 
-  // Остановка отправки координат без остановки сервиса
   service.on('stopTracking').listen((event) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('active_hunter_id');
@@ -125,20 +118,34 @@ void onStart(ServiceInstance service) async {
   final hunterId = prefs.getString('active_hunter_id');
   if (hunterId == null) return;
 
+  // ✅ Читаем интервал из настроек
+  final dbInt = prefs.getInt('setting_db_interval') ?? 30;
+  final interval = Duration(seconds: dbInt);
+  DateTime? lastDbUpdate;
+
   try {
     Supabase.instance.client;
   } catch (_) {
     await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   }
 
+  // ✅ Читаем точность из настроек (по умолчанию high)
+  final accStr = prefs.getString('setting_accuracy') ?? 'high';
+  final acc = accStr == 'balanced' ? LocationAccuracy.medium : (accStr == 'low' ? LocationAccuracy.low : LocationAccuracy.high);
+
   Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.high,
+    locationSettings: LocationSettings(
+      accuracy: acc,
       distanceFilter: 5,
     ),
   ).listen((position) async {
     final currentHunterId = prefs.getString('active_hunter_id');
     if (currentHunterId == null) return;
+
+    // ✅ Троттлинг на основе настроек
+    final now = DateTime.now();
+    if (lastDbUpdate != null && now.difference(lastDbUpdate!) < interval) return;
+    lastDbUpdate = now;
 
     try {
       await Supabase.instance.client.from('hunters').update({
@@ -151,7 +158,6 @@ void onStart(ServiceInstance service) async {
     }
   });
 }
-// ===============================================================
 
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
