@@ -1,12 +1,167 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'app_session.dart';
+import 'app_settings.dart'; // ✅ Импорт настроек
+import 'screens/home_screen.dart';
+import 'screens/map_screen.dart';
 
-void main() => runApp(const GeoHuntApp());
+const supabaseUrl = 'https://qucrbwsudcwqetcullsp.supabase.co';
+const supabaseAnonKey = 'sb_publishable_CVhiWocVbOe54-Bleexnpg_9meljsC8';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+
+  final session = Supabase.instance.client.auth.currentSession;
+  if (session == null) {
+    try {
+      await Supabase.instance.client.auth.signInAnonymously();
+    } catch (e) {
+      debugPrint('Ошибка анонимной авторизации: $e');
+    }
+  }
+
+  await AppSession.load();
+  await AppSettings.load(); // ✅ Загружаем настройки
+  await initializeService();
+
+  if (AppSession.hasSession) {
+    try {
+      final res = await Supabase.instance.client
+          .from('hunters')
+          .select('id')
+          .eq('id', AppSession.hunterId!)
+          .maybeSingle();
+      if (res == null) await AppSession.clear();
+    } catch (_) {}
+  }
+
+  runApp(const GeoHuntApp());
+}
+
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
+
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'geohunt_channel',
+    'GeoHunt Tracking',
+    description: 'Отслеживание вашей геопозиции для группы.',
+    importance: Importance.low,
+  );
+
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+  if (Platform.isAndroid) {
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: false,
+      isForegroundMode: true,
+      notificationChannelId: 'geohunt_channel',
+      initialNotificationTitle: 'GeoHunt',
+      initialNotificationContent: 'Отслеживание локации...',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+      autoStart: false,
+      onForeground: onStart,
+      onBackground: onIosBackground,
+    ),
+  );
+}
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  return true;
+}
+
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  if (service is AndroidServiceInstance) {
+    service.on('setAsForeground').listen((event) {
+      service.setAsForegroundService();
+    });
+    service.on('setAsBackground').listen((event) {
+      service.setAsBackgroundService();
+    });
+  }
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
+
+  service.on('onTaskRemoved').listen((event) {
+    service.stopSelf();
+  });
+
+  service.on('stopTracking').listen((event) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('active_hunter_id');
+    debugPrint("BG Service: Tracking stopped.");
+  });
+
+  final prefs = await SharedPreferences.getInstance();
+  final hunterId = prefs.getString('active_hunter_id');
+  if (hunterId == null) return;
+
+  // ✅ Читаем интервал из настроек
+  final dbInt = prefs.getInt('setting_db_interval') ?? 30;
+  final interval = Duration(seconds: dbInt);
+  DateTime? lastDbUpdate;
+
+  try {
+    Supabase.instance.client;
+  } catch (_) {
+    await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  }
+
+  // ✅ Читаем точность из настроек (по умолчанию high)
+  final accStr = prefs.getString('setting_accuracy') ?? 'high';
+  final acc = accStr == 'balanced' ? LocationAccuracy.medium : (accStr == 'low' ? LocationAccuracy.low : LocationAccuracy.high);
+
+  Geolocator.getPositionStream(
+    locationSettings: LocationSettings(
+      accuracy: acc,
+      distanceFilter: 5,
+    ),
+  ).listen((position) async {
+    final currentHunterId = prefs.getString('active_hunter_id');
+    if (currentHunterId == null) return;
+
+    // ✅ Троттлинг на основе настроек
+    final now = DateTime.now();
+    if (lastDbUpdate != null && now.difference(lastDbUpdate!) < interval) return;
+    lastDbUpdate = now;
+
+    try {
+      await Supabase.instance.client.from('hunters').update({
+        'lat': position.latitude,
+        'lon': position.longitude,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', currentHunterId);
+    } catch (e) {
+      debugPrint('BG location update error: $e');
+    }
+  });
+}
 
 class GeoHuntApp extends StatelessWidget {
   const GeoHuntApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -19,284 +174,7 @@ class GeoHuntApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const MapScreen(),
-    );
-  }
-}
-
-class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
-  @override
-  State<MapScreen> createState() => _MapScreenState();
-}
-
-class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
-  MapLibreMapController? _mapCtrl;
-  LatLng? _myPos;
-  Circle? _myCircle;
-  StreamSubscription<Position>? _posSub;
-  bool _locating = false;
-  bool _firstFix = true;
-  int _mapKey = 0;
-  bool _styleLoaded = false;
-
-  int _currentStyleIndex = 0;
-
-  // 1. Чистый спутник (EOxCloudless 2025)
-  static const String _satelliteStyle = '''
-  {
-    "version": 8,
-    "name": "Satellite",
-    "sources": {
-      "satellite": {
-        "type": "raster",
-        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
-        "tileSize": 256,
-        "minzoom": 0,
-        "maxzoom": 14,
-        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
-      }
-    },
-    "layers": [
-      { "id": "satellite", "type": "raster", "source": "satellite" }
-    ]
-  }
-  ''';
-
-  // 2. Гибрид (Спутник EOxCloudless + подписи OpenFreeMap)
-  static const String _hybridStyle = '''
-  {
-    "version": 8,
-    "name": "Hybrid",
-    "sources": {
-      "satellite": {
-        "type": "raster",
-        "tiles": ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg"],
-        "tileSize": 256,
-        "minzoom": 0,
-        "maxzoom": 14,
-        "attribution": "<a href=\\"https://cloudless.eox.at\\">EOxCloudless</a> by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
-      },
-      "openmaptiles": {
-        "type": "vector",
-        "url": "https://tiles.openfreemap.org/planet"
-      }
-    },
-    "layers": [
-      { "id": "satellite", "type": "raster", "source": "satellite", "minzoom": 0, "maxzoom": 22 },
-      {
-        "id": "water",
-        "type": "fill",
-        "source": "openmaptiles",
-        "source-layer": "water",
-        "paint": { "fill-color": "#a0c8f0", "fill-opacity": 0.3 }
-      },
-      {
-        "id": "road_shield",
-        "type": "line",
-        "source": "openmaptiles",
-        "source-layer": "transportation",
-        "paint": { "line-color": "#ffffff", "line-width": 1.5, "line-opacity": 0.6 }
-      },
-      {
-        "id": "place_labels",
-        "type": "symbol",
-        "source": "openmaptiles",
-        "source-layer": "place",
-        "layout": {
-          "text-field": "{name}",
-          "text-size": 12,
-          "text-font": ["Noto Sans Regular"]
-        },
-        "paint": {
-          "text-color": "#ffffff",
-          "text-halo-color": "#000000",
-          "text-halo-width": 1.5
-        }
-      }
-    ]
-  }
-  ''';
-
-  final List<String> _styleUrls = [
-    'https://tiles.openfreemap.org/styles/positron', // ✅ Улицы — легкий и быстрый Positron
-    _satelliteStyle,                                  // Спутник
-    _hybridStyle,                                     // Гибрид
-  ];
-
-  final List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _startLocation();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _posSub?.cancel();
-    _mapCtrl?.dispose();
-    _mapCtrl = null;
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _mapCtrl = null;
-      _myCircle = null;
-      _styleLoaded = false;
-      _firstFix = true;
-      if (mounted) setState(() => _mapKey++);
-    }
-  }
-
-  void _cycleStyle() {
-    setState(() {
-      _currentStyleIndex = (_currentStyleIndex + 1) % _styleUrls.length;
-      _mapCtrl = null;
-      _myCircle = null;
-      _styleLoaded = false;
-      _mapKey++;
-    });
-  }
-
-  Future<void> _startLocation() async {
-    final ok = await _ensurePermission();
-    if (!ok) {
-      _toast('Нет разрешения на геолокацию');
-      return;
-    }
-    if (mounted) setState(() => _locating = true);
-    _posSub?.cancel();
-    _posSub = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-      ),
-    ).listen(_onPosition);
-    try {
-      final cur = await Geolocator.getCurrentPosition(
-        locationSettings:
-            const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      _onPosition(cur);
-    } catch (_) {}
-  }
-
-  Future<bool> _ensurePermission() async {
-    if (!await Geolocator.isLocationServiceEnabled()) return false;
-    var perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
-    }
-    return perm == LocationPermission.whileInUse ||
-        perm == LocationPermission.always;
-  }
-
-  Future<void> _onPosition(Position pos) async {
-    if (!mounted) return;
-    final ll = LatLng(pos.latitude, pos.longitude);
-    setState(() {
-      _myPos = ll;
-      _locating = false;
-    });
-    if (_styleLoaded) {
-      await _updateCircle(ll);
-    }
-    if (_firstFix && _mapCtrl != null) {
-      _firstFix = false;
-      try {
-        await _mapCtrl!.animateCamera(CameraUpdate.newLatLngZoom(ll, 15));
-      } catch (_) {}
-    }
-  }
-
-  Future<void> _updateCircle(LatLng pos) async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null || !_styleLoaded) return;
-    try {
-      if (_myCircle == null) {
-        _myCircle = await ctrl.addCircle(CircleOptions(
-          geometry: pos,
-          circleColor: '#2E7D32',
-          circleRadius: 10,
-          circleStrokeWidth: 2,
-          circleStrokeColor: '#FFFFFF',
-        ));
-      } else {
-        await ctrl.updateCircle(_myCircle!, CircleOptions(geometry: pos));
-      }
-    } catch (e) {
-      debugPrint('Ошибка при работе с кругом: $e');
-    }
-  }
-
-  // 👇 Переименовано: MapLibreMapController вместо MaplibreMapController
-  Future<void> _onMapCreated(MapLibreMapController ctrl) async {
-    _mapCtrl = ctrl;
-    _myCircle = null;
-  }
-
-  void _onStyleLoaded() {
-    _styleLoaded = true;
-    if (_myPos != null) {
-      _updateCircle(_myPos!);
-    }
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('GeoHunt'),
-        actions: [
-          TextButton.icon(
-            onPressed: _cycleStyle,
-            icon: const Icon(Icons.layers, color: Colors.white),
-            label: Text(
-              _styleNames[_currentStyleIndex],
-              style: const TextStyle(color: Colors.white),
-            ),
-          ),
-        ],
-      ),
-      // 👇 Переименовано: MapLibreMap вместо MaplibreMap
-      body: MapLibreMap(
-        key: ValueKey(_mapKey),
-        styleString: _styleUrls[_currentStyleIndex],
-        initialCameraPosition: CameraPosition(
-          target: _myPos ?? const LatLng(55.751244, 37.618423),
-          zoom: _myPos != null ? 15 : 3,
-        ),
-        onMapCreated: _onMapCreated,
-        onStyleLoadedCallback: _onStyleLoaded,
-        dragEnabled: true,
-        zoomGesturesEnabled: true,
-        rotateGesturesEnabled: true,
-        tiltGesturesEnabled: true,
-        scrollGesturesEnabled: true,
-        doubleClickZoomEnabled: true,
-        compassEnabled: true,
-        trackCameraPosition: true,
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _locating ? null : _startLocation,
-        child: _locating
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.gps_fixed),
-      ),
+      home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
     );
   }
 }
