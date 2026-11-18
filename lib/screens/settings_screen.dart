@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart'; // ✅ Добавлен импорт для LocationAccuracy
 import '../app_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
