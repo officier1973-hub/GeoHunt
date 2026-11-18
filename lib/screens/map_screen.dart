@@ -487,13 +487,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
+  // ✅ Обновляем состояние компаса через setState, чтобы виджет всегда перерисовывался
   void _startCompass() {
     _compassSub?.cancel();
-    // ✅ Всегда слушаем датчик, без проверок настроек
     _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
       final h = event.heading;
       if (h != null && h >= 0) {
-        _compassHeading = h;
+        if (mounted) {
+          setState(() {
+            _compassHeading = h;
+          });
+        }
         _applyBearing();
       }
     });
@@ -1161,6 +1165,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // ✅ Кастомный виджет компаса: всегда виден, без фона Material, с полупрозрачной подложкой
+  Widget _buildCompass() {
+    final heading = _compassHeading ?? 0.0;
+    return GestureDetector(
+      onTap: () {
+        _mapCtrl?.animateCamera(
+          CameraUpdate.bearingTo(0),
+          duration: const Duration(milliseconds: 500),
+        );
+      },
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.35), // Полупрозрачный фон для читаемости на любой карте
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 2),
+        ),
+        child: Center(
+          child: Transform.rotate(
+            angle: -heading * (3.141592653589793 / 180), // Поворот стрелки на север
+            child: const Icon(
+              Icons.navigation,
+              color: Colors.white,
+              size: 28,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final center = _lastCenter ?? _myPos ?? const LatLng(55.751244, 37.618423);
@@ -1233,17 +1269,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: MapLibreMap(
-        styleString: _baseStyleUrl,
-        initialCameraPosition: CameraPosition(
-          target: center,
-          zoom: zoom,
-        ),
-        onMapCreated: _onMapCreated,
-        onStyleLoadedCallback: _onStyleLoaded,
-        trackCameraPosition: true,
-        onCameraIdle: _onCameraMoveEnd,
-        compassEnabled: true,
+      body: Stack(
+        children: [
+          MapLibreMap(
+            styleString: _baseStyleUrl,
+            initialCameraPosition: CameraPosition(
+              target: center,
+              zoom: zoom,
+            ),
+            onMapCreated: _onMapCreated,
+            onStyleLoadedCallback: _onStyleLoaded,
+            trackCameraPosition: true,
+            onCameraIdle: _onCameraMoveEnd,
+            compassEnabled: false, // Отключаем встроенный, используем свой
+          ),
+          // ✅ Компас в правом верхнем углу, всегда виден
+          Positioned(
+            top: 16,
+            right: 16,
+            child: _buildCompass(),
+          ),
+        ],
       ),
       
       floatingActionButton: Column(
