@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart'; // ✅ Добавлен импорт для LocationAccuracy
+import 'package:geolocator/geolocator.dart';
 import '../app_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -100,23 +100,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'Дополнительно',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white70),
-          ),
-          const SizedBox(height: 8),
-          Card(
-            child: SwitchListTile(
-              title: const Text('Магнитный компас'),
-              subtitle: const Text('Выключите для экономии батареи'),
-              value: AppSettings.compassEnabled,
-              onChanged: (val) {
-                AppSettings.saveCompass(val);
-                setState(() {});
-              },
             ),
           ),
         ],
