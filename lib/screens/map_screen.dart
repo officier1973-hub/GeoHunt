@@ -489,10 +489,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _startCompass() {
     _compassSub?.cancel();
-    if (!AppSettings.compassEnabled) {
-      _compassHeading = null;
-      return;
-    }
+    // ✅ Всегда слушаем датчик, без проверок настроек
     _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
       final h = event.heading;
       if (h != null && h >= 0) {
@@ -1246,7 +1243,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onStyleLoadedCallback: _onStyleLoaded,
         trackCameraPosition: true,
         onCameraIdle: _onCameraMoveEnd,
-        compassEnabled: true, // ✅ ВКЛЮЧАЕМ ВСТРОЕННЫЙ КОМПАС КАРТЫ
+        compassEnabled: true,
       ),
       
       floatingActionButton: Column(
