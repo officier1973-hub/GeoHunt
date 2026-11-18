@@ -11,7 +11,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import '../app_session.dart';
+import '../app_settings.dart'; // ✅ Импорт настроек
 import 'home_screen.dart';
+import 'settings_screen.dart'; // ✅ Импорт экрана настроек
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -56,9 +58,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   DateTime? _lastBearingUpdate;
   static const _bearingUpdateInterval = Duration(milliseconds: 100);
 
-  // ✅ Переменные для троттлинга записи в БД
   DateTime? _lastDbUpdate;
-  static const _dbUpdateInterval = Duration(seconds: 30);
 
   bool _userLayerReady = false;
   bool _userUpdateInProgress = false;
@@ -186,8 +186,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     ));
 
-    _startLocation();
-    _startCompass();
+    // ✅ Загружаем настройки перед запуском GPS
+    AppSettings.load().then((_) {
+      _startLocation();
+      _startCompass();
+    });
+
     _subscribeToGroupHunters();
     _subscribeToEvents();
     _startHeartbeat();
@@ -212,6 +216,105 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     
     super.dispose();
   }
+
+  // ===============================================================
+  // ✅ ЛЕГЕНДА (СПИСОК ГРУППЫ)
+  // ===============================================================
+  void _showLegend() {
+    final myColor = const Color(0xFF2E7D32);
+    final now = DateTime.now().toUtc();
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.7,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.people, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Группа ${AppSession.groupCode ?? ""}',
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${_otherHunters.length + 1} чел.',
+                        style: const TextStyle(color: Colors.white60),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      // Своя строка
+                      ListTile(
+                        leading: CircleAvatar(
+                          radius: 12,
+                          backgroundColor: myColor,
+                          child: const Icon(Icons.my_location, size: 14, color: Colors.white),
+                        ),
+                        title: Text(
+                          '${AppSession.hunterName ?? ""} (вы)',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: const Text('ваша позиция'),
+                      ),
+                      // Другие охотники
+                      ..._otherHunters.map((h) {
+                        String hex = h['color']?.toString() ?? '#1976D2';
+                        Color color = Color(int.parse('0xFF${hex.replaceAll('#', '')}'));
+                        
+                        final dt = _parseUpdatedAt(h['updated_at']);
+                        final age = dt != null ? now.difference(dt) : null;
+                        
+                        return ListTile(
+                          leading: CircleAvatar(
+                            radius: 12,
+                            backgroundColor: color,
+                          ),
+                          title: Text((h['name'] ?? '').toString()),
+                          subtitle: Text(age != null ? _formatAge(age) : 'нет данных'),
+                          trailing: h['sos'] == true 
+                              ? const Icon(Icons.warning_rounded, color: Colors.red) 
+                              : null,
+                        );
+                      }),
+                      if (_otherHunters.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Text(
+                            'В группе пока только вы.\nПередайте код другим охотникам.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white60),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+  // ===============================================================
 
   void _toggleOfflineMode(bool value) {
     setState(() => _isOfflineMode = value);
@@ -393,6 +496,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _startCompass() {
     _compassSub?.cancel();
+    // ✅ Проверяем настройку компаса
+    if (!AppSettings.compassEnabled) {
+      _compassHeading = null;
+      return;
+    }
     _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
       final h = event.heading;
       if (h != null && h >= 0) {
@@ -536,6 +644,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _rememberCamera();
+      // ✅ Перезагружаем настройки (вдруг пользователь поменял их)
+      AppSettings.load().then((_) {
+        _startCompass(); // Перезапускаем компас с новыми настройками
+      });
       if (mounted) {
         setState(() {});
         _updateOthersLayer();
@@ -614,12 +726,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     if (mounted) setState(() => _locating = true);
     _posSub?.cancel();
+    
+    // ✅ Используем точность из настроек
     _posSub = geo.Geolocator.getPositionStream(
-      locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high, distanceFilter: 5),
+      locationSettings: geo.LocationSettings(
+        accuracy: AppSettings.gpsAccuracy, 
+        distanceFilter: 5,
+      ),
     ).listen(_onPosition);
+    
     try {
       final cur = await geo.Geolocator.getCurrentPosition(
-        locationSettings: const geo.LocationSettings(accuracy: geo.LocationAccuracy.high),
+        locationSettings: geo.LocationSettings(accuracy: AppSettings.gpsAccuracy),
       );
       _onPosition(cur);
     } catch (_) {}
@@ -643,8 +761,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
 
     _applyBearing();
-    
-    // ✅ ВОЗВРАЩЕНА ОТПРАВКА КООРДИНАТ В БАЗУ
     await _updateMyPositionInDb(newPos);
 
     if (_firstFix && _mapCtrl != null) {
@@ -670,12 +786,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  // ✅ ВОЗВРАЩЕННЫЙ МЕТОД ОТПРАВКИ В БАЗУ
   Future<void> _updateMyPositionInDb(LatLng pos) async {
     final hunterId = AppSession.hunterId;
     if (hunterId == null) return;
+    
+    // ✅ Используем интервал из настроек
     final now = DateTime.now();
-    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < _dbUpdateInterval) return;
+    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < AppSettings.dbInterval) return;
     _lastDbUpdate = now;
 
     try {
@@ -743,7 +860,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (!_userLayerReady) {
         await ctrl.addSymbolLayer('user_location_source', 'user_location_layer', SymbolLayerProperties(
           iconImage: 'user_arrow',
-          iconSize: 2.5, // ✅ Увеличен размер стрелки
+          iconSize: 2.5, 
           iconRotate: ['get', 'bearing'],
           iconRotationAlignment: 'map',
           iconAllowOverlap: true,
@@ -823,7 +940,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await ctrl.addGeoJsonSource('others_source', featureCollection);
 
       await ctrl.addCircleLayer('others_source', 'others_layer', CircleLayerProperties(
-        circleColor: ['to-color', ['get', 'color']], // ✅ Исправлено на to-color
+        circleColor: ['to-color', ['get', 'color']],
         circleRadius: ['get', 'radius'],
         circleStrokeColor: '#FFFFFF',
         circleStrokeWidth: ['get', 'strokeWidth'],
@@ -900,7 +1017,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       await ctrl.addSymbolLayer('events_source', 'events_icons_layer', SymbolLayerProperties(
         iconImage: ['get', 'icon'],
-        iconSize: 1.5, // ✅ Увеличен размер иконок событий
+        iconSize: 1.5,
         iconAllowOverlap: true,
         iconIgnorePlacement: true,
       ));
@@ -1077,6 +1194,28 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
+          // ✅ Кнопка легенды
+          IconButton(
+            icon: const Icon(Icons.people, color: Colors.white),
+            tooltip: 'Список группы',
+            onPressed: _showLegend,
+          ),
+          // ✅ Кнопка настроек
+          IconButton(
+            icon: const Icon(Icons.settings, color: Colors.white),
+            tooltip: 'Настройки',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              ).then((_) {
+                // После возвращения из настроек перезапускаем GPS с новыми параметрами
+                _startLocation();
+                _startCompass();
+              });
+            },
+          ),
+          // SOS
           IconButton(
             icon: Icon(
               Icons.warning_rounded,
