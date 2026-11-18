@@ -11,9 +11,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import '../app_session.dart';
-import '../app_settings.dart'; // ✅ Импорт настроек
+import '../app_settings.dart'; 
 import 'home_screen.dart';
-import 'settings_screen.dart'; // ✅ Импорт экрана настроек
+import 'settings_screen.dart'; 
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -186,7 +186,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     ));
 
-    // ✅ Загружаем настройки перед запуском GPS
     AppSettings.load().then((_) {
       _startLocation();
       _startCompass();
@@ -217,9 +216,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // ===============================================================
-  // ✅ ЛЕГЕНДА (СПИСОК ГРУППЫ)
-  // ===============================================================
   void _showLegend() {
     final myColor = const Color(0xFF2E7D32);
     final now = DateTime.now().toUtc();
@@ -262,7 +258,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   child: ListView(
                     shrinkWrap: true,
                     children: [
-                      // Своя строка
                       ListTile(
                         leading: CircleAvatar(
                           radius: 12,
@@ -275,7 +270,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         ),
                         subtitle: const Text('ваша позиция'),
                       ),
-                      // Другие охотники
                       ..._otherHunters.map((h) {
                         String hex = h['color']?.toString() ?? '#1976D2';
                         Color color = Color(int.parse('0xFF${hex.replaceAll('#', '')}'));
@@ -314,7 +308,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       },
     );
   }
-  // ===============================================================
 
   void _toggleOfflineMode(bool value) {
     setState(() => _isOfflineMode = value);
@@ -496,7 +489,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _startCompass() {
     _compassSub?.cancel();
-    // ✅ Проверяем настройку компаса
     if (!AppSettings.compassEnabled) {
       _compassHeading = null;
       return;
@@ -644,9 +636,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _rememberCamera();
-      // ✅ Перезагружаем настройки (вдруг пользователь поменял их)
       AppSettings.load().then((_) {
-        _startCompass(); // Перезапускаем компас с новыми настройками
+        _startCompass();
       });
       if (mounted) {
         setState(() {});
@@ -727,7 +718,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (mounted) setState(() => _locating = true);
     _posSub?.cancel();
     
-    // ✅ Используем точность из настроек
     _posSub = geo.Geolocator.getPositionStream(
       locationSettings: geo.LocationSettings(
         accuracy: AppSettings.gpsAccuracy, 
@@ -790,7 +780,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final hunterId = AppSession.hunterId;
     if (hunterId == null) return;
     
-    // ✅ Используем интервал из настроек
     final now = DateTime.now();
     if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < AppSettings.dbInterval) return;
     _lastDbUpdate = now;
@@ -1194,13 +1183,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
-          // ✅ Кнопка легенды
           IconButton(
             icon: const Icon(Icons.people, color: Colors.white),
             tooltip: 'Список группы',
             onPressed: _showLegend,
           ),
-          // ✅ Кнопка настроек
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
             tooltip: 'Настройки',
@@ -1209,13 +1196,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 context,
                 MaterialPageRoute(builder: (_) => const SettingsScreen()),
               ).then((_) {
-                // После возвращения из настроек перезапускаем GPS с новыми параметрами
                 _startLocation();
                 _startCompass();
               });
             },
           ),
-          // SOS
           IconButton(
             icon: Icon(
               Icons.warning_rounded,
@@ -1261,7 +1246,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onStyleLoadedCallback: _onStyleLoaded,
         trackCameraPosition: true,
         onCameraIdle: _onCameraMoveEnd,
-        compassEnabled: false,
+        compassEnabled: true, // ✅ ВКЛЮЧАЕМ ВСТРОЕННЫЙ КОМПАС КАРТЫ
       ),
       
       floatingActionButton: Column(
