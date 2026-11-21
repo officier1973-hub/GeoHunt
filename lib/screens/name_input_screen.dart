@@ -51,31 +51,39 @@ class _NameInputScreenState extends State<NameInputScreen> {
       _error = null;
     });
     try {
-      final userId = Supabase.instance.client.auth.currentUser?.id;
+      final userId = await AppSession.ensureSignedIn();
       if (userId == null) {
-        setState(() => _error = 'Ошибка авторизации. Попробуйте перезапустить приложение.');
-        _saving = false;
+        if (!mounted) return;
+        setState(() {
+          _error = 'Ошибка авторизации. Попробуйте перезапустить приложение.';
+          _saving = false;
+        });
         return;
       }
 
-      final res = await Supabase.instance.client
+      final supabase = Supabase.instance.client;
+      // На случай если при прошлом выходе без сети в БД осталась старая запись этого user_id
+      await supabase.from('hunters').delete().eq('user_id', userId);
+
+      final res = await supabase
           .from('hunters')
           .insert({
             'group_id': widget.groupId,
             'name': name,
             'role': _selectedRole,
             'color': _colorForRole(_selectedRole),
-            'user_id': userId, // ✅ Сохраняем user_id
+            'user_id': userId,
           })
           .select('id, name, role')
           .single();
+
       await AppSession.save(
         groupId: widget.groupId,
         groupCode: widget.groupCode,
         hunterId: res['id'] as String,
         hunterName: res['name'] as String,
         hunterRole: (res['role'] as String?) ?? _selectedRole,
-        userId: userId, // ✅ Сохраняем в сессии
+        userId: userId,
       );
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
