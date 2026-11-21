@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../app_session.dart';
 import 'name_input_screen.dart';
 
 class JoinGroupScreen extends StatefulWidget {
@@ -30,12 +31,22 @@ class _JoinGroupScreenState extends State<JoinGroupScreen> {
       _error = null;
     });
     try {
-      final res = await Supabase.instance.client
-          .from('groups')
-          .select('id, code')
-          .eq('code', code)
-          .maybeSingle();
-      if (res == null) {
+      final userId = await AppSession.ensureSignedIn();
+      if (userId == null) {
+        if (!mounted) return;
+        setState(() {
+          _error = 'Ошибка авторизации. Проверьте интернет.';
+          _checking = false;
+        });
+        return;
+      }
+
+      final res = await Supabase.instance.client.rpc(
+        'get_group_by_code',
+        params: {'p_code': code},
+      );
+      final rows = res is List ? res : <dynamic>[];
+      if (rows.isEmpty) {
         if (!mounted) return;
         setState(() {
           _error = 'Группа с таким кодом не найдена';
@@ -43,12 +54,13 @@ class _JoinGroupScreenState extends State<JoinGroupScreen> {
         });
         return;
       }
+      final group = Map<String, dynamic>.from(rows.first as Map);
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => NameInputScreen(
-            groupId: res['id'] as String,
-            groupCode: res['code'] as String,
+            groupId: group['id'] as String,
+            groupCode: group['code'] as String,
           ),
         ),
       );
