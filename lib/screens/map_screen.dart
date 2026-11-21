@@ -1,19 +1,21 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:ui' as ui;
+import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:maplibre_gl/maplibre_gl.dart';
-import 'package:geolocator/geolocator.dart' as geo;
-import 'package:flutter_compass/flutter_compass.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_compass/flutter_compass.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart' as geo;
+import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_session.dart';
-import '../app_settings.dart'; 
+import '../app_settings.dart';
 import 'home_screen.dart';
-import 'settings_screen.dart'; 
+import 'settings_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -28,8 +30,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   StreamSubscription<List<Map<String, dynamic>>>? _huntersSub;
   List<Map<String, dynamic>> _otherHunters = [];
-  
+
   bool _mySosActive = false;
+  bool _sosDialogOpen = false;
   final Map<String, bool> _otherHuntersSosState = {};
   final AudioPlayer _sirenPlayer = AudioPlayer();
 
@@ -51,7 +54,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double? _lastZoom;
 
   int _currentStyleIndex = 0;
-
   bool _isOfflineMode = false;
   bool _isSwitchingStyle = false;
 
@@ -66,11 +68,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   static const _staleThreshold = Duration(hours: 1);
   static const _heartbeatInterval = Duration(minutes: 15);
-  static const _cleanupInterval = Duration(hours: 1);
 
   Timer? _heartbeatTimer;
   Timer? _freshnessTimer;
-  Timer? _cleanupTimer;
 
   static const double _labelsMinZoom = 12;
 
@@ -85,12 +85,26 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   String _roleLabel(String? role) {
     switch (role) {
-      case 'shooter': return 'стрелок';
-      case 'driver': return 'загонщик';
-      case 'ranger': return 'егерь';
-      case 'none': return '';
-      default: return '';
+      case 'shooter':
+        return 'стрелок';
+      case 'driver':
+        return 'загонщик';
+      case 'ranger':
+        return 'егерь';
+      case 'none':
+        return '';
+      default:
+        return '';
     }
+  }
+
+  Color _safeParseHexColor(String? raw, {Color fallback = const Color(0xFF1976D2)}) {
+    if (raw == null) return fallback;
+    final cleaned = raw.replaceAll('#', '').trim();
+    if (cleaned.length != 6 && cleaned.length != 8) return fallback;
+    final parsed = int.tryParse(cleaned, radix: 16);
+    if (parsed == null) return fallback;
+    return Color(cleaned.length == 6 ? (0xFF000000 | parsed) : parsed);
   }
 
   DateTime? _parseUpdatedAt(dynamic raw) {
@@ -109,7 +123,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (age.inDays >= 1) return '${age.inDays} дн';
     if (age.inHours >= 1) {
       final m = age.inMinutes % 60;
-      return m > 0 ? '${age.inHours} ч ${m} м' : '${age.inHours} ч';
+      return m > 0 ? '${age.inHours} ч $m м' : '${age.inHours} ч';
     }
     if (age.inMinutes >= 1) return '${age.inMinutes} мин';
     return 'меньше минуты';
@@ -162,8 +176,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    FlutterBackgroundService().startService();
+
+    _initTrackingService();
 
     _audioPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
@@ -171,18 +185,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AndroidAudioFocus.gainTransient,
+        audioFocus: AudioAudioFocus.gainTransient,
       ),
     ));
 
-    _sirenPlayer.setReleaseMode(ReleaseMode.stop);
+    _sirenPlayer.setReleaseMode(ReleaseMode.loop);
     _sirenPlayer.setAudioContext(AudioContext(
       android: AudioContextAndroid(
         isSpeakerphoneOn: true,
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AndroidAudioFocus.gainTransient,
+        audioFocus: AudioAudioFocus.gainTransient,
       ),
     ));
 
@@ -195,8 +209,28 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _subscribeToEvents();
     _startHeartbeat();
     _startFreshnessTimer();
-    _startCleanupTimer();
-    _cleanupStaleData();
+  }
+
+  Future<void> _initTrackingService() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        await FlutterLocalNotificationsPlugin()
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>()
+            ?.requestNotificationsPermission();
+      } catch (e) {
+        debugPrint('Ошибка запроса разрешения на уведомления: $e');
+      }
+    }
+
+    final service = FlutterBackgroundService();
+    final running = await service.isRunning();
+    if (!running) {
+      await service.startService();
+    } else {
+      service.invoke('updateSettings');
+    }
+    service.invoke('appState', {'foreground': true});
   }
 
   @override
@@ -208,16 +242,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _eventsSub?.cancel();
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
-    _cleanupTimer?.cancel();
-    
+
     _audioPlayer.dispose();
+    _sirenPlayer.stop();
     _sirenPlayer.dispose();
-    
+
     super.dispose();
   }
 
   void _showLegend() {
-    final myColor = const Color(0xFF2E7D32);
+    const myColor = Color(0xFF2E7D32);
     final now = DateTime.now().toUtc();
 
     showModalBottomSheet<void>(
@@ -259,10 +293,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     shrinkWrap: true,
                     children: [
                       ListTile(
-                        leading: CircleAvatar(
+                        leading: const CircleAvatar(
                           radius: 12,
                           backgroundColor: myColor,
-                          child: const Icon(Icons.my_location, size: 14, color: Colors.white),
+                          child: Icon(Icons.my_location,
+                              size: 14, color: Colors.white),
                         ),
                         title: Text(
                           '${AppSession.hunterName ?? ""} (вы)',
@@ -271,21 +306,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         subtitle: const Text('ваша позиция'),
                       ),
                       ..._otherHunters.map((h) {
-                        String hex = h['color']?.toString() ?? '#1976D2';
-                        Color color = Color(int.parse('0xFF${hex.replaceAll('#', '')}'));
-                        
+                        final color =
+                            _safeParseHexColor(h['color']?.toString());
                         final dt = _parseUpdatedAt(h['updated_at']);
                         final age = dt != null ? now.difference(dt) : null;
-                        
+
                         return ListTile(
                           leading: CircleAvatar(
                             radius: 12,
                             backgroundColor: color,
                           ),
                           title: Text((h['name'] ?? '').toString()),
-                          subtitle: Text(age != null ? _formatAge(age) : 'нет данных'),
-                          trailing: h['sos'] == true 
-                              ? const Icon(Icons.warning_rounded, color: Colors.red) 
+                          subtitle: Text(
+                              age != null ? _formatAge(age) : 'нет данных'),
+                          trailing: h['sos'] == true
+                              ? const Icon(Icons.warning_rounded,
+                                  color: Colors.red)
                               : null,
                         );
                       }),
@@ -309,8 +345,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _toggleOfflineMode(bool value) {
+  Future<void> _toggleOfflineMode(bool value) async {
     setState(() => _isOfflineMode = value);
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        await setOffline(value);
+      } catch (e) {
+        debugPrint('setOffline error: $e');
+      }
+    }
+    if (!mounted) return;
     if (_isOfflineMode) {
       _toast('Офлайн-режим: карта использует только кэш.');
     } else {
@@ -320,7 +364,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _cycleStyle() async {
     if (_isSwitchingStyle) return;
-    
+
     setState(() => _isSwitchingStyle = true);
     _rememberCamera();
 
@@ -329,7 +373,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     await _updateStyleLayers();
 
-    await Future.delayed(const Duration(seconds: 1));
+    await Future.delayed(const Duration(milliseconds: 500));
     if (mounted) setState(() => _isSwitchingStyle = false);
   }
 
@@ -344,32 +388,50 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       try { await ctrl.removeLayer('labels_layer'); } catch (_) {}
 
       if (_currentStyleIndex > 0) {
-        await ctrl.addSource('satellite_source', RasterSourceProperties(
-          tiles: [_satelliteTileUrl],
-          tileSize: 256,
-          minzoom: 0,
-          maxzoom: 14,
-          attribution: '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
-        ));
-        await ctrl.addRasterLayer('satellite_source', 'satellite_layer', RasterLayerProperties());
+        await ctrl.addSource(
+          'satellite_source',
+          RasterSourceProperties(
+            tiles: [_satelliteTileUrl],
+            tileSize: 256,
+            minzoom: 0,
+            maxzoom: 14,
+            attribution:
+                '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+          ),
+        );
+        await ctrl.addRasterLayer(
+          'satellite_source',
+          'satellite_layer',
+          RasterLayerProperties(),
+        );
       }
 
       if (_currentStyleIndex == 2) {
-        await ctrl.addLineLayer('openmaptiles', 'roads_layer', LineLayerProperties(
-          lineColor: '#FFFFFF',
-          lineWidth: 1.5,
-          lineOpacity: 0.8,
-        ), sourceLayer: 'streets');
+        await ctrl.addLineLayer(
+          'openmaptiles',
+          'roads_layer',
+          LineLayerProperties(
+            lineColor: '#FFFFFF',
+            lineWidth: 1.5,
+            lineOpacity: 0.8,
+          ),
+          sourceLayer: 'transportation',
+        );
 
-        await ctrl.addSymbolLayer('openmaptiles', 'labels_layer', SymbolLayerProperties(
-          textField: '{name}',
-          textSize: 13,
-          textColor: '#FFFFFF',
-          textHaloColor: '#000000',
-          textHaloWidth: 1.8,
-          textFont: ['Noto Sans Regular'],
-          textAllowOverlap: false,
-        ), sourceLayer: 'place');
+        await ctrl.addSymbolLayer(
+          'openmaptiles',
+          'labels_layer',
+          SymbolLayerProperties(
+            textField: '{name}',
+            textSize: 13,
+            textColor: '#FFFFFF',
+            textHaloColor: '#000000',
+            textHaloWidth: 1.8,
+            textFont: ['Noto Sans Regular'],
+            textAllowOverlap: false,
+          ),
+          sourceLayer: 'place',
+        );
       }
 
       try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
@@ -377,39 +439,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
       try { await ctrl.removeLayer('events_icons_layer'); } catch (_) {}
       try { await ctrl.removeLayer('events_labels_layer'); } catch (_) {}
-      
+
       _userLayerReady = false;
 
       await _updateUserLocationLayer();
       await _updateOthersLayer();
       await _updateEventsLayer();
-
     } catch (e) {
       debugPrint('Error updating style layers: $e');
-    }
-  }
-
-  void _startCleanupTimer() {
-    _cleanupTimer?.cancel();
-    _cleanupTimer = Timer.periodic(_cleanupInterval, (_) => _cleanupStaleData());
-  }
-
-  Future<void> _cleanupStaleData() async {
-    final groupId = AppSession.groupId;
-    final myId = AppSession.hunterId;
-    if (groupId == null) return;
-
-    try {
-      final supabase = Supabase.instance.client;
-      final hunterCutoff = DateTime.now().toUtc().subtract(const Duration(hours: 2)).toIso8601String();
-      var hunterQuery = supabase.from('hunters').delete().eq('group_id', groupId).lt('updated_at', hunterCutoff);
-      if (myId != null) hunterQuery = hunterQuery.neq('id', myId);
-      await hunterQuery;
-
-      final eventCutoff = DateTime.now().toUtc().subtract(const Duration(days: 7)).toIso8601String();
-      await supabase.from('events').delete().eq('group_id', groupId).lt('created_at', eventCutoff);
-    } catch (e) {
-      debugPrint('Cleanup error: $e');
     }
   }
 
@@ -465,7 +502,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
+    _heartbeatTimer =
+        Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
   }
 
   Future<void> _sendHeartbeat() async {
@@ -487,7 +525,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
-  // ✅ Обновляем состояние компаса через setState, чтобы виджет всегда перерисовывался
   void _startCompass() {
     _compassSub?.cancel();
     _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
@@ -507,7 +544,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final bearing = _compassHeading ?? _gpsHeading;
     if (bearing == null) return;
     final now = DateTime.now();
-    if (_lastBearingUpdate != null && now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) return;
+    if (_lastBearingUpdate != null &&
+        now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
+      return;
+    }
     _lastBearingUpdate = now;
     _myBearing = bearing;
     _updateUserLocationLayer();
@@ -524,7 +564,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .stream(primaryKey: ['id'])
         .eq('group_id', groupId)
         .listen((rows) {
-      
       for (final row in rows) {
         final id = row['id'] as String;
         final isSos = row['sos'] == true;
@@ -549,21 +588,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }, onError: (e) => debugPrint('Ошибка подписки на охотников: $e'));
   }
 
-  void _triggerIncomingSos(String name) async {
+  Future<void> _triggerIncomingSos(String name) async {
     try {
       await _sirenPlayer.stop();
       await _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
-
-      _sirenPlayer.onPlayerComplete.first.then((_) {
-        _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
-      });
     } catch (e) {
       debugPrint('Ошибка сирены: $e');
     }
 
     if (!mounted) return;
-    
-    showDialog<void>(
+    if (_sosDialogOpen) {
+      _toast('SOS от $name!');
+      return;
+    }
+
+    _sosDialogOpen = true;
+    await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -573,18 +613,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             children: [
               Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
               SizedBox(width: 8),
-              Text('SOS!', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              Text('SOS!',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
             ],
           ),
           content: Text(
-            'Охотник "$name" просит о помощи!\n\nПосмотрите на карту, его точка мигает красным.',
+            'Охотник "$name" просит о помощи!\n\nПосмотрите на карту, его точка выделена красным.',
             style: const TextStyle(color: Colors.white, fontSize: 16),
           ),
           actions: [
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.red),
+              style: FilledButton.styleFrom(
+                  backgroundColor: Colors.white, foregroundColor: Colors.red),
               onPressed: () {
-                _sirenPlayer.stop(); 
+                _sirenPlayer.stop();
                 Navigator.of(ctx).pop();
               },
               child: const Text('Понятно'),
@@ -593,6 +636,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
       },
     );
+    _sosDialogOpen = false;
+    await _sirenPlayer.stop();
   }
 
   Future<void> _toggleMySos() async {
@@ -604,9 +649,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Отправить сигнал SOS?'),
-          content: const Text('Все участники группы услышат громкую сирену и увидят вашу точку красным. Используйте только в экстренной ситуации.'),
+          content: const Text(
+              'Все участники группы услышат громкую сирену и увидят вашу точку красным. Используйте только в экстренной ситуации.'),
           actions: [
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Отмена')),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: Colors.red),
               onPressed: () => Navigator.of(ctx).pop(true),
@@ -625,7 +673,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         'sos_at': newState ? DateTime.now().toUtc().toIso8601String() : null,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', hunterId);
-      
+
       setState(() => _mySosActive = newState);
       if (newState) _toast('Сигнал SOS отправлен!');
     } catch (e) {
@@ -635,9 +683,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final service = FlutterBackgroundService();
     if (state == AppLifecycleState.resumed) {
+      service.invoke('appState', {'foreground': true});
       _rememberCamera();
       AppSettings.load().then((_) {
+        _startLocation();
         _startCompass();
       });
       if (mounted) {
@@ -645,8 +696,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _updateOthersLayer();
         _updateEventsLayer();
         _sendHeartbeat();
-        _cleanupStaleData();
       }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      service.invoke('appState', {'foreground': false});
     }
   }
 
@@ -665,29 +718,36 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Выйти из группы?'),
-        content: const Text('Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
+        content: const Text(
+            'Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Выйти')),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Выйти')),
         ],
       ),
     );
     if (confirmed != true) return;
 
-    FlutterBackgroundService().invoke("stopTracking");
-
     final hunterId = AppSession.hunterId;
+    await AppSession.clear();
+    FlutterBackgroundService().invoke('stopService');
+
     if (hunterId != null) {
       try {
-        await Supabase.instance.client.from('hunters').delete().eq('id', hunterId);
+        await Supabase.instance.client
+            .from('hunters')
+            .delete()
+            .eq('id', hunterId);
       } catch (e) {
         debugPrint('Не удалось удалить охотника при выходе: $e');
       }
     }
 
-    await AppSession.clear();
     if (!mounted) return;
-    
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (_) => false,
@@ -718,17 +778,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     if (mounted) setState(() => _locating = true);
     _posSub?.cancel();
-    
+
     _posSub = geo.Geolocator.getPositionStream(
       locationSettings: geo.LocationSettings(
-        accuracy: AppSettings.gpsAccuracy, 
+        accuracy: AppSettings.gpsAccuracy,
         distanceFilter: 5,
       ),
     ).listen(_onPosition);
-    
+
     try {
       final cur = await geo.Geolocator.getCurrentPosition(
-        locationSettings: geo.LocationSettings(accuracy: AppSettings.gpsAccuracy),
+        locationSettings:
+            geo.LocationSettings(accuracy: AppSettings.gpsAccuracy),
       );
       _onPosition(cur);
     } catch (_) {}
@@ -737,8 +798,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<bool> _ensurePermission() async {
     if (!await geo.Geolocator.isLocationServiceEnabled()) return false;
     var perm = await geo.Geolocator.checkPermission();
-    if (perm == geo.LocationPermission.denied) perm = await geo.Geolocator.requestPermission();
-    return perm == geo.LocationPermission.whileInUse || perm == geo.LocationPermission.always;
+    if (perm == geo.LocationPermission.denied) {
+      perm = await geo.Geolocator.requestPermission();
+    }
+    return perm == geo.LocationPermission.whileInUse ||
+        perm == geo.LocationPermission.always;
   }
 
   Future<void> _onPosition(geo.Position pos) async {
@@ -780,9 +844,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _updateMyPositionInDb(LatLng pos) async {
     final hunterId = AppSession.hunterId;
     if (hunterId == null) return;
-    
+
     final now = DateTime.now();
-    if (_lastDbUpdate != null && now.difference(_lastDbUpdate!) < AppSettings.dbInterval) return;
+    if (_lastDbUpdate != null &&
+        now.difference(_lastDbUpdate!) < AppSettings.dbInterval) {
+      return;
+    }
     _lastDbUpdate = now;
 
     try {
@@ -811,13 +878,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
       await ctrl.addImage('user_arrow', arrowBytes.buffer.asUint8List());
 
-      final spottedBytes = await _createMapIcon(icon: Icons.remove_red_eye, backgroundColor: const Color(0xFFFFC107));
+      final spottedBytes = await _createMapIcon(
+          icon: Icons.remove_red_eye,
+          backgroundColor: const Color(0xFFFFC107));
       await ctrl.addImage('event_spotted', spottedBytes);
 
-      final woundedBytes = await _createMapIcon(icon: Icons.water_drop, backgroundColor: const Color(0xFFE64A19));
+      final woundedBytes = await _createMapIcon(
+          icon: Icons.water_drop, backgroundColor: const Color(0xFFE64A19));
       await ctrl.addImage('event_wounded', woundedBytes);
 
-      final harvestedBytes = await _createMapIcon(icon: Icons.track_changes, backgroundColor: const Color(0xFF388E3C));
+      final harvestedBytes = await _createMapIcon(
+          icon: Icons.track_changes, backgroundColor: const Color(0xFF388E3C));
       await ctrl.addImage('event_harvested', harvestedBytes);
     } catch (e) {
       debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
@@ -840,7 +911,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final bearing = _myBearing ?? 0.0;
       final geoJsonData = {
         'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [pos.longitude, pos.latitude]},
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [pos.longitude, pos.latitude],
+        },
         'properties': {'bearing': bearing},
       };
 
@@ -848,14 +922,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await ctrl.addGeoJsonSource('user_location_source', geoJsonData);
 
       if (!_userLayerReady) {
-        await ctrl.addSymbolLayer('user_location_source', 'user_location_layer', SymbolLayerProperties(
-          iconImage: 'user_arrow',
-          iconSize: 2.5, 
-          iconRotate: ['get', 'bearing'],
-          iconRotationAlignment: 'map',
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-        ));
+        await ctrl.addSymbolLayer(
+          'user_location_source',
+          'user_location_layer',
+          SymbolLayerProperties(
+            iconImage: 'user_arrow',
+            iconSize: 2.5,
+            iconRotate: ['get', 'bearing'],
+            iconRotationAlignment: 'map',
+            iconAllowOverlap: true,
+            iconIgnorePlacement: true,
+          ),
+        );
         _userLayerReady = true;
       }
     } catch (e) {
@@ -887,22 +965,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         final dt = _parseUpdatedAt(h['updated_at']);
         final age = dt != null ? now.difference(dt) : null;
         final isStale = age != null && age > _staleThreshold;
-        
+
         String color;
         double radius;
         double strokeWidth;
 
         if (isSos) {
-          color = '#FF0000'; 
-          radius = 18.0;      
+          color = '#FF0000';
+          radius = 18.0;
           strokeWidth = 5.0;
         } else if (isStale) {
-          color = '#9E9E9E'; 
-          radius = 12.0;      
+          color = '#9E9E9E';
+          radius = 12.0;
           strokeWidth = 3.0;
         } else {
           color = (h['color'] ?? '#1976D2').toString();
-          radius = 12.0;      
+          radius = 12.0;
           strokeWidth = 3.0;
         }
 
@@ -915,10 +993,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         return {
           'type': 'Feature',
-          'geometry': {'type': 'Point', 'coordinates': [h['lon'], h['lat']]},
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [h['lon'], h['lat']],
+          },
           'properties': {
-            'name': name, 
-            'color': color, 
+            'name': name,
+            'color': color,
             'label': label,
             'radius': radius,
             'strokeWidth': strokeWidth,
@@ -926,26 +1007,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         };
       }).toList();
 
-      final featureCollection = {'type': 'FeatureCollection', 'features': features};
+      final featureCollection = {
+        'type': 'FeatureCollection',
+        'features': features,
+      };
       await ctrl.addGeoJsonSource('others_source', featureCollection);
 
-      await ctrl.addCircleLayer('others_source', 'others_layer', CircleLayerProperties(
-        circleColor: ['to-color', ['get', 'color']],
-        circleRadius: ['get', 'radius'],
-        circleStrokeColor: '#FFFFFF',
-        circleStrokeWidth: ['get', 'strokeWidth'],
-      ));
+      await ctrl.addCircleLayer(
+        'others_source',
+        'others_layer',
+        CircleLayerProperties(
+          circleColor: ['to-color', ['get', 'color']],
+          circleRadius: ['get', 'radius'],
+          circleStrokeColor: '#FFFFFF',
+          circleStrokeWidth: ['get', 'strokeWidth'],
+        ),
+      );
 
-      await ctrl.addSymbolLayer('others_source', 'others_labels_layer', SymbolLayerProperties(
-        textField: ['get', 'label'],
-        textSize: 12,
-        textColor: '#FFFFFF',
-        textHaloColor: '#000000',
-        textHaloWidth: 2,
-        textFont: ['Noto Sans Regular'],
-        textAllowOverlap: false,
-        textOffset: [0, -1.8],
-      ), minzoom: _labelsMinZoom);
+      await ctrl.addSymbolLayer(
+        'others_source',
+        'others_labels_layer',
+        SymbolLayerProperties(
+          textField: ['get', 'label'],
+          textSize: 12,
+          textColor: '#FFFFFF',
+          textHaloColor: '#000000',
+          textHaloWidth: 2,
+          textFont: ['Noto Sans Regular'],
+          textAllowOverlap: false,
+          textOffset: [0, -1.8],
+        ),
+        minzoom: _labelsMinZoom,
+      );
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
     }
@@ -969,10 +1062,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         final note = e['note'] as String?;
         final dt = _parseUpdatedAt(e['created_at']);
         final age = dt != null ? now.difference(dt) : null;
-        
+
         String typeLabel = '';
         String iconId = 'event_spotted';
-        
+
         if (type == 'spotted') {
           typeLabel = 'Видел';
           iconId = 'event_spotted';
@@ -994,7 +1087,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
         return {
           'type': 'Feature',
-          'geometry': {'type': 'Point', 'coordinates': [e['lon'], e['lat']]},
+          'geometry': {
+            'type': 'Point',
+            'coordinates': [e['lon'], e['lat']],
+          },
           'properties': {
             'icon': iconId,
             'label': label,
@@ -1002,27 +1098,38 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         };
       }).toList();
 
-      final featureCollection = {'type': 'FeatureCollection', 'features': features};
+      final featureCollection = {
+        'type': 'FeatureCollection',
+        'features': features,
+      };
       await ctrl.addGeoJsonSource('events_source', featureCollection);
 
-      await ctrl.addSymbolLayer('events_source', 'events_icons_layer', SymbolLayerProperties(
-        iconImage: ['get', 'icon'],
-        iconSize: 1.5,
-        iconAllowOverlap: true,
-        iconIgnorePlacement: true,
-      ));
+      await ctrl.addSymbolLayer(
+        'events_source',
+        'events_icons_layer',
+        SymbolLayerProperties(
+          iconImage: ['get', 'icon'],
+          iconSize: 1.5,
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+      );
 
-      await ctrl.addSymbolLayer('events_source', 'events_labels_layer', SymbolLayerProperties(
-        textField: ['get', 'label'],
-        textSize: 11,
-        textColor: '#FFFFFF',
-        textHaloColor: '#000000',
-        textHaloWidth: 2,
-        textFont: ['Noto Sans Regular'],
-        textAllowOverlap: false,
-        textOffset: [0, 2.0],
-      ), minzoom: _labelsMinZoom);
-
+      await ctrl.addSymbolLayer(
+        'events_source',
+        'events_labels_layer',
+        SymbolLayerProperties(
+          textField: ['get', 'label'],
+          textSize: 11,
+          textColor: '#FFFFFF',
+          textHaloColor: '#000000',
+          textHaloWidth: 2,
+          textFont: ['Noto Sans Regular'],
+          textAllowOverlap: false,
+          textOffset: [0, 2.0],
+        ),
+        minzoom: _labelsMinZoom,
+      );
     } catch (e) {
       debugPrint('Ошибка обновления слоя событий: $e');
     }
@@ -1046,7 +1153,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           builder: (context, setModalState) {
             return Padding(
               padding: EdgeInsets.only(
-                left: 24, right: 24, top: 8,
+                left: 24,
+                right: 24,
+                top: 8,
                 bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
               child: Column(
@@ -1059,18 +1168,31 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 20),
-                  
                   Row(
                     children: [
-                      _buildEventOption('spotted', 'Видел', Colors.amber, selectedType, (val) => setModalState(() => selectedType = val)),
+                      _buildEventOption(
+                          'spotted',
+                          'Видел',
+                          Colors.amber,
+                          selectedType,
+                          (val) => setModalState(() => selectedType = val)),
                       const SizedBox(width: 8),
-                      _buildEventOption('wounded', 'Подранен', Colors.deepOrange, selectedType, (val) => setModalState(() => selectedType = val)),
+                      _buildEventOption(
+                          'wounded',
+                          'Подранен',
+                          Colors.deepOrange,
+                          selectedType,
+                          (val) => setModalState(() => selectedType = val)),
                       const SizedBox(width: 8),
-                      _buildEventOption('harvested', 'Добыт', Colors.green, selectedType, (val) => setModalState(() => selectedType = val)),
+                      _buildEventOption(
+                          'harvested',
+                          'Добыт',
+                          Colors.green,
+                          selectedType,
+                          (val) => setModalState(() => selectedType = val)),
                     ],
                   ),
                   const SizedBox(height: 24),
-
                   TextField(
                     controller: noteCtrl,
                     maxLines: 2,
@@ -1082,7 +1204,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 16),
-
                   FilledButton.icon(
                     icon: const Icon(Icons.send),
                     label: const Text('Отправить событие'),
@@ -1103,7 +1224,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildEventOption(String type, String label, MaterialColor color, String selectedType, Function(String) onSelect) {
+  Widget _buildEventOption(
+    String type,
+    String label,
+    MaterialColor color,
+    String selectedType,
+    Function(String) onSelect,
+  ) {
     final isSelected = type == selectedType;
     return Expanded(
       child: InkWell(
@@ -1142,7 +1269,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final hunterName = AppSession.hunterName;
     final pos = _myPos;
 
-    if (groupId == null || hunterId == null || hunterName == null || pos == null) return;
+    if (groupId == null ||
+        hunterId == null ||
+        hunterName == null ||
+        pos == null) {
+      return;
+    }
 
     try {
       await Supabase.instance.client.from('events').insert({
@@ -1165,7 +1297,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // ✅ Кастомный виджет компаса: всегда виден, без фона Material, с полупрозрачной подложкой
   Widget _buildCompass() {
     final heading = _compassHeading ?? 0.0;
     return GestureDetector(
@@ -1179,13 +1310,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.35), // Полупрозрачный фон для читаемости на любой карте
+          color: Colors.black.withOpacity(0.35),
           shape: BoxShape.circle,
           border: Border.all(color: Colors.white, width: 2),
         ),
         child: Center(
           child: Transform.rotate(
-            angle: -heading * (3.141592653589793 / 180), // Поворот стрелки на север
+            angle: -heading * (3.141592653589793 / 180),
             child: const Icon(
               Icons.navigation,
               color: Colors.white,
@@ -1203,7 +1334,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
 
     final myRole = _roleLabel(AppSession.hunterRole);
-    final myTitle = myRole.isEmpty ? (AppSession.hunterName ?? '') : '${AppSession.hunterName ?? ''} · $myRole';
+    final myTitle = myRole.isEmpty
+        ? (AppSession.hunterName ?? '')
+        : '${AppSession.hunterName ?? ''} · $myRole';
 
     return Scaffold(
       appBar: AppBar(
@@ -1211,8 +1344,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Группа ${AppSession.groupCode ?? ""}', style: const TextStyle(fontSize: 13)),
-            Text(myTitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text('Группа ${AppSession.groupCode ?? ""}',
+                style: const TextStyle(fontSize: 12),
+                overflow: TextOverflow.ellipsis),
+            Text(myTitle,
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis),
           ],
         ),
         actions: [
@@ -1222,19 +1360,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onPressed: _showLegend,
           ),
           IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white),
-            tooltip: 'Настройки',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              ).then((_) {
-                _startLocation();
-                _startCompass();
-              });
-            },
-          ),
-          IconButton(
             icon: Icon(
               Icons.warning_rounded,
               color: _mySosActive ? Colors.red : Colors.white,
@@ -1242,30 +1367,65 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             tooltip: _mySosActive ? 'Отменить SOS' : 'Подать сигнал SOS',
             onPressed: _toggleMySos,
           ),
-          
-          Transform.scale(
-            scale: 0.8,
-            child: Switch(
-              value: _isOfflineMode,
-              onChanged: _toggleOfflineMode,
-              activeColor: Colors.orange,
-            ),
-          ),
-
           TextButton.icon(
             onPressed: _isSwitchingStyle ? null : _cycleStyle,
-            icon: _isSwitchingStyle 
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.layers, color: Colors.white, size: 20),
+            icon: _isSwitchingStyle
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.layers, color: Colors.white, size: 18),
             label: Text(
-              _isSwitchingStyle ? '...' : _styleNames[_currentStyleIndex], 
-              style: const TextStyle(color: Colors.white, fontSize: 13)
+              _isSwitchingStyle ? '...' : _styleNames[_currentStyleIndex],
+              style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.logout, size: 20),
-            tooltip: 'Выйти из группы',
-            onPressed: _logout,
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            tooltip: 'Меню',
+            onSelected: (value) {
+              if (value == 'settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                ).then((_) async {
+                  await AppSettings.load();
+                  _startLocation();
+                  _startCompass();
+                  FlutterBackgroundService().invoke('updateSettings');
+                });
+              } else if (value == 'offline') {
+                _toggleOfflineMode(!_isOfflineMode);
+              } else if (value == 'logout') {
+                _logout();
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem<String>(
+                value: 'settings',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.settings),
+                  title: Text('Настройки'),
+                ),
+              ),
+              CheckedPopupMenuItem<String>(
+                value: 'offline',
+                checked: _isOfflineMode,
+                child: const Text('Офлайн-режим (кэш)'),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem<String>(
+                value: 'logout',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.logout, color: Colors.redAccent),
+                  title: Text('Выйти из группы',
+                      style: TextStyle(color: Colors.redAccent)),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1281,17 +1441,40 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onStyleLoadedCallback: _onStyleLoaded,
             trackCameraPosition: true,
             onCameraIdle: _onCameraMoveEnd,
-            compassEnabled: false, // Отключаем встроенный, используем свой
+            compassEnabled: false,
           ),
-          // ✅ Компас в правом верхнем углу, всегда виден
           Positioned(
             top: 16,
             right: 16,
             child: _buildCompass(),
           ),
+          if (_isOfflineMode)
+            Positioned(
+              top: 16,
+              left: 16,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade900.withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.cloud_off, size: 16, color: Colors.white),
+                    SizedBox(width: 6),
+                    Text('Офлайн-кэш',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
-      
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -1309,7 +1492,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onPressed: _locating ? null : _centerOnMe,
             tooltip: 'Найти меня',
             child: _locating
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.gps_fixed),
           ),
         ],
