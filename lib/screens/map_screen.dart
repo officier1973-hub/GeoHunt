@@ -60,10 +60,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _isSwitchingStyle = false;
 
   DateTime? _lastBearingUpdate;
-  static const _bearingUpdateInterval = Duration(milliseconds: 250);
+  static const _bearingUpdateInterval = Duration(milliseconds: 100);
 
   DateTime? _lastDbUpdate;
 
+  bool _userLayerReady = false;
+  bool _ringsLayersReady = false;
   bool _myLayersSyncInProgress = false;
   bool _myLayersSyncPending = false;
   bool _myLayersPendingUpdateRings = false;
@@ -481,6 +483,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
       }
 
+      _userLayerReady = false;
+      _ringsLayersReady = false;
       await _updateOthersLayer();
       await _updateEventsLayer();
       await _syncMyLocationLayers(updateRings: true);
@@ -519,16 +523,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (ctrl == null) return;
 
     try {
-      try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
-      try { await ctrl.removeSource('distance_rings_labels_source'); } catch (_) {}
-      try { await ctrl.removeSource('distance_rings_source'); } catch (_) {}
-
       final pos = _myPos;
       if (!AppSettings.showDistanceRings ||
           pos == null ||
           AppSettings.ringDistancesMeters.isEmpty) {
+        _ringsLayersReady = false;
+        try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
+        try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
+        try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
+        try { await ctrl.removeSource('distance_rings_labels_source'); } catch (_) {}
+        try { await ctrl.removeSource('distance_rings_source'); } catch (_) {}
         return;
       }
 
@@ -566,15 +570,35 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         });
       }
 
-      await ctrl.addGeoJsonSource('distance_rings_source', {
+      final ringsGeoJson = {
         'type': 'FeatureCollection',
         'features': ringFeatures,
-      });
-
-      await ctrl.addGeoJsonSource('distance_rings_labels_source', {
+      };
+      final labelsGeoJson = {
         'type': 'FeatureCollection',
         'features': labelFeatures,
-      });
+      };
+
+      if (_ringsLayersReady) {
+        try {
+          await ctrl.setGeoJsonSource('distance_rings_source', ringsGeoJson);
+          await ctrl.setGeoJsonSource(
+              'distance_rings_labels_source', labelsGeoJson);
+          return;
+        } catch (_) {
+          _ringsLayersReady = false;
+        }
+      }
+
+      try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
+      try { await ctrl.removeSource('distance_rings_labels_source'); } catch (_) {}
+      try { await ctrl.removeSource('distance_rings_source'); } catch (_) {}
+
+      await ctrl.addGeoJsonSource('distance_rings_source', ringsGeoJson);
+      await ctrl.addGeoJsonSource(
+          'distance_rings_labels_source', labelsGeoJson);
 
       await ctrl.addLineLayer(
         'distance_rings_source',
@@ -611,6 +635,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         minzoom: _labelsMinZoom,
       );
+
+      _ringsLayersReady = true;
     } catch (e) {
       debugPrint('Ошибка обновления слоя кругов расстояния: $e');
     }
@@ -622,9 +648,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (ctrl == null || pos == null) return;
 
     try {
-      try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
-      try { await ctrl.removeSource('user_location_source'); } catch (_) {}
-
       final bearing = _myBearing ?? 0.0;
       final geoJsonData = {
         'type': 'Feature',
@@ -634,6 +657,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         },
         'properties': {'bearing': bearing},
       };
+
+      if (_userLayerReady) {
+        try {
+          await ctrl.setGeoJsonSource('user_location_source', geoJsonData);
+          return;
+        } catch (_) {
+          _userLayerReady = false;
+        }
+      }
+
+      try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
+      try { await ctrl.removeSource('user_location_source'); } catch (_) {}
 
       await ctrl.addGeoJsonSource('user_location_source', geoJsonData);
       await ctrl.addSymbolLayer(
@@ -649,6 +684,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           iconIgnorePlacement: true,
         ),
       );
+      _userLayerReady = true;
     } catch (e) {
       debugPrint('Ошибка обновления слоя пользователя: $e');
     }
@@ -690,7 +726,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }, onError: (e) => debugPrint('Ошибка подписки на события: $e'));
   }
 
- Future<void> _playEventSound(String type) async {
+  Future<void> _playEventSound(String type) async {
     try {
       if (type == 'spotted') {
         await _audioPlayer.play(AssetSource('sounds/sound_spotted.mp3'));
@@ -748,7 +784,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
       return;
     }
-    if (_myBearing != null && _bearingDiffDeg(bearing, _myBearing!) < 3.0) {
+    if (_myBearing != null && _bearingDiffDeg(bearing, _myBearing!) < 1.5) {
       return;
     }
     _lastBearingUpdate = now;
@@ -1090,6 +1126,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final ctrl = _mapCtrl;
     if (ctrl == null) return;
 
+    _userLayerReady = false;
+    _ringsLayersReady = false;
     _myLayersSyncInProgress = false;
     _myLayersSyncPending = false;
     _myLayersPendingUpdateRings = false;
