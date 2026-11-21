@@ -11,6 +11,7 @@ import 'app_session.dart';
 import 'app_settings.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
+import 'track_recorder.dart';
 
 const supabaseUrl = 'https://qucrbwsudcwqetcullsp.supabase.co';
 const supabaseAnonKey = 'sb_publishable_CVhiWocVbOe54-Bleexnpg_9meljsC8';
@@ -92,6 +93,7 @@ void onStart(ServiceInstance service) async {
 
   StreamSubscription<Position>? posSub;
   bool isAppForeground = true;
+  bool isTrackRecording = await TrackRecorder.isRecording();
   DateTime? lastDbUpdate;
 
   if (service is AndroidServiceInstance) {
@@ -144,6 +146,15 @@ void onStart(ServiceInstance service) async {
     ).listen((position) async {
       if (isAppForeground) return;
 
+      // Запись локального трека идёт при каждом шаге 8+ м, независимо от интервала БД
+      if (isTrackRecording) {
+        await TrackRecorder.appendPoint(
+          lat: position.latitude,
+          lon: position.longitude,
+          accuracy: position.accuracy,
+        );
+      }
+
       final activeHunterId = prefs.getString('active_hunter_id');
       if (activeHunterId == null) return;
 
@@ -168,6 +179,12 @@ void onStart(ServiceInstance service) async {
   service.on('appState').listen((event) {
     if (event != null && event['foreground'] is bool) {
       isAppForeground = event['foreground'] as bool;
+    }
+  });
+
+  service.on('trackState').listen((event) {
+    if (event != null && event['recording'] is bool) {
+      isTrackRecording = event['recording'] as bool;
     }
   });
 
