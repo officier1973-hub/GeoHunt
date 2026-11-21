@@ -222,7 +222,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AudioAudioFocus.gainTransient,
+        audioFocus: AndroidAudioFocus.gainTransient,
       ),
     ));
 
@@ -233,7 +233,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         stayAwake: true,
         contentType: AndroidContentType.sonification,
         usageType: AndroidUsageType.alarm,
-        audioFocus: AudioAudioFocus.gainTransient,
+        audioFocus: AndroidAudioFocus.gainTransient,
       ),
     ));
 
