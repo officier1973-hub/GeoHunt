@@ -1,4 +1,5 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AppSession {
   static const _kGroupId = 'active_group_id';
@@ -6,7 +7,7 @@ class AppSession {
   static const _kHunterId = 'active_hunter_id';
   static const _kHunterName = 'active_hunter_name';
   static const _kHunterRole = 'active_hunter_role';
-  static const _kUserId = 'active_user_id'; // ✅ Новое поле
+  static const _kUserId = 'active_user_id';
 
   static String? groupId;
   static String? groupCode;
@@ -20,6 +21,15 @@ class AppSession {
       groupCode != null &&
       hunterId != null &&
       hunterName != null;
+
+  static Future<String?> ensureSignedIn() async {
+    final auth = Supabase.instance.client.auth;
+    if (auth.currentUser != null) {
+      return auth.currentUser!.id;
+    }
+    final res = await auth.signInAnonymously();
+    return res.user?.id;
+  }
 
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -37,7 +47,7 @@ class AppSession {
     required String hunterId,
     required String hunterName,
     required String hunterRole,
-    required String userId, // ✅ Новый параметр
+    required String userId,
   }) async {
     AppSession.groupId = groupId;
     AppSession.groupCode = groupCode;
