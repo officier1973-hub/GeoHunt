@@ -15,8 +15,10 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_session.dart';
 import '../app_settings.dart';
+import '../track_recorder.dart';
 import 'home_screen.dart';
 import 'settings_screen.dart';
+import 'tracks_history_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -43,6 +45,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _initialEventsLoaded = false;
 
   LatLng? _myPos;
+  double? _myAccuracy;
   double? _myBearing;
   double? _compassHeading;
   double? _gpsHeading;
@@ -66,9 +69,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   bool _userLayerReady = false;
   bool _ringsLayersReady = false;
+  bool _trackLayersReady = false;
   bool _myLayersSyncInProgress = false;
   bool _myLayersSyncPending = false;
   bool _myLayersPendingUpdateRings = false;
+  bool _myLayersPendingUpdateTrack = false;
+
+  // Активная запись трека
+  bool _isRecordingTrack = false;
+  DateTime? _trackStartedAt;
+  List<TrackPoint> _activeTrackPoints = [];
+  double _activeTrackDistance = 0.0;
+  Timer? _trackUiTimer;
 
   static const _staleThreshold = Duration(hours: 1);
   static const _heartbeatInterval = Duration(minutes: 15);
@@ -245,8 +257,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (mounted) setState(() {});
       _startLocation();
       _startCompass();
-      _syncMyLocationLayers(updateRings: true);
+      _syncMyLocationLayers(updateRings: true, updateTrack: true);
     });
+
+    _restoreActiveTrack();
+    TrackRecorder.syncPendingTracks();
 
     _subscribeToGroupHunters();
     _subscribeToEvents();
@@ -276,6 +291,139 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     service.invoke('appState', {'foreground': true});
   }
 
+  Future<void> _restoreActiveTrack() async {
+    final state = await TrackRecorder.loadActiveState();
+    if (!mounted) return;
+    setState(() {
+      _isRecordingTrack = state.isRecording;
+      _trackStartedAt = state.startedAt;
+      _activeTrackPoints = state.points;
+      _activeTrackDistance = state.distanceMeters;
+    });
+    FlutterBackgroundService()
+        .invoke('trackState', {'recording': state.isRecording});
+    _syncTrackTimer();
+    await _syncMyLocationLayers(updateTrack: true);
+  }
+
+  void _syncTrackTimer() {
+    _trackUiTimer?.cancel();
+    if (_isRecordingTrack) {
+      _trackUiTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _isRecordingTrack) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  Future<void> _startTrackRecording() async {
+    final pos = _myPos;
+    final state = await TrackRecorder.startNewTrack(
+      initialLat: pos?.latitude,
+      initialLon: pos?.longitude,
+      initialAccuracy: _myAccuracy,
+    );
+    if (!mounted) return;
+    setState(() {
+      _isRecordingTrack = true;
+      _trackStartedAt = state.startedAt;
+      _activeTrackPoints = state.points;
+      _activeTrackDistance = state.distanceMeters;
+    });
+    FlutterBackgroundService().invoke('trackState', {'recording': true});
+    _syncTrackTimer();
+    await _syncMyLocationLayers(updateTrack: true);
+    _toast('Запись трека началась');
+  }
+
+  Future<void> _showStopTrackDialog() async {
+    final defaultTitle = TrackRecorder.defaultTrackTitle(
+      _trackStartedAt ?? DateTime.now().toUtc(),
+    );
+    final titleCtrl = TextEditingController(text: defaultTitle);
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Завершить запись трека?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Пройдено: ${TrackRecorder.formatDistance(_activeTrackDistance)} · Точек: ${_activeTrackPoints.length}',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: titleCtrl,
+              maxLength: 60,
+              decoration: const InputDecoration(
+                labelText: 'Название трека',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('discard'),
+            child: const Text('Сбросить', style: TextStyle(color: Colors.redAccent)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('continue'),
+            child: const Text('Продолжить'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop('save'),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+
+    final enteredTitle = titleCtrl.text.trim();
+    titleCtrl.dispose();
+
+    if (action == null || action == 'continue') return;
+
+    if (action == 'discard') {
+      await TrackRecorder.discardActiveTrack();
+      if (!mounted) return;
+      setState(() {
+        _isRecordingTrack = false;
+        _trackStartedAt = null;
+        _activeTrackPoints = [];
+        _activeTrackDistance = 0.0;
+      });
+      FlutterBackgroundService().invoke('trackState', {'recording': false});
+      _syncTrackTimer();
+      await _syncMyLocationLayers(updateTrack: true);
+      _toast('Запись трека сброшена');
+      return;
+    }
+
+    if (action == 'save') {
+      final uploaded = await TrackRecorder.finishAndSaveTrack(title: enteredTitle);
+      if (!mounted) return;
+      setState(() {
+        _isRecordingTrack = false;
+        _trackStartedAt = null;
+        _activeTrackPoints = [];
+        _activeTrackDistance = 0.0;
+      });
+      FlutterBackgroundService().invoke('trackState', {'recording': false});
+      _syncTrackTimer();
+      await _syncMyLocationLayers(updateTrack: true);
+      if (uploaded) {
+        _toast('Трек сохранён в облако');
+      } else {
+        _toast('Нет сети: трек сохранён локально и отправится позже');
+      }
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -285,6 +433,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _eventsSub?.cancel();
     _heartbeatTimer?.cancel();
     _freshnessTimer?.cancel();
+    _trackUiTimer?.cancel();
 
     _audioPlayer.dispose();
     _sirenPlayer.stop();
@@ -485,19 +634,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       _userLayerReady = false;
       _ringsLayersReady = false;
+      _trackLayersReady = false;
       await _updateOthersLayer();
       await _updateEventsLayer();
-      await _syncMyLocationLayers(updateRings: true);
+      await _syncMyLocationLayers(updateRings: true, updateTrack: true);
     } catch (e) {
       debugPrint('Error updating style layers: $e');
     }
   }
 
-  Future<void> _syncMyLocationLayers({bool updateRings = false}) async {
+  Future<void> _syncMyLocationLayers({
+    bool updateRings = false,
+    bool updateTrack = false,
+  }) async {
     if (_mapCtrl == null) return;
     if (_myLayersSyncInProgress) {
       _myLayersSyncPending = true;
       if (updateRings) _myLayersPendingUpdateRings = true;
+      if (updateTrack) _myLayersPendingUpdateTrack = true;
       return;
     }
     _myLayersSyncInProgress = true;
@@ -506,15 +660,91 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (updateRings) {
         await _updateDistanceRingsLayerInternal();
       }
+      if (updateTrack) {
+        await _updateActiveTrackLayerInternal();
+      }
       await _updateUserLocationLayerInternal();
     } finally {
       _myLayersSyncInProgress = false;
       if (_myLayersSyncPending) {
         final needRings = _myLayersPendingUpdateRings;
+        final needTrack = _myLayersPendingUpdateTrack;
         _myLayersSyncPending = false;
         _myLayersPendingUpdateRings = false;
-        _syncMyLocationLayers(updateRings: needRings);
+        _myLayersPendingUpdateTrack = false;
+        _syncMyLocationLayers(updateRings: needRings, updateTrack: needTrack);
       }
+    }
+  }
+
+  Future<void> _updateActiveTrackLayerInternal() async {
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
+
+    try {
+      if (!_isRecordingTrack || _activeTrackPoints.length < 2) {
+        _trackLayersReady = false;
+        try { await ctrl.removeLayer('active_track_layer'); } catch (_) {}
+        try { await ctrl.removeLayer('active_track_casing_layer'); } catch (_) {}
+        try { await ctrl.removeSource('active_track_source'); } catch (_) {}
+        return;
+      }
+
+      final coords =
+          _activeTrackPoints.map((p) => [p.lon, p.lat]).toList();
+      final geoJson = {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'LineString',
+          'coordinates': coords,
+        },
+        'properties': {},
+      };
+
+      if (_trackLayersReady) {
+        try {
+          await ctrl.setGeoJsonSource('active_track_source', geoJson);
+          return;
+        } catch (_) {
+          _trackLayersReady = false;
+        }
+      }
+
+      try { await ctrl.removeLayer('active_track_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('active_track_casing_layer'); } catch (_) {}
+      try { await ctrl.removeSource('active_track_source'); } catch (_) {}
+
+      await ctrl.addGeoJsonSource('active_track_source', geoJson);
+
+      await ctrl.addLineLayer(
+        'active_track_source',
+        'active_track_casing_layer',
+        LineLayerProperties(
+          lineColor: '#000000',
+          lineWidth: 5.5,
+          lineOpacity: 0.65,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
+      );
+
+      await ctrl.addLineLayer(
+        'active_track_source',
+        'active_track_layer',
+        LineLayerProperties(
+          lineColor: '#FFB300',
+          lineWidth: 3.5,
+          lineOpacity: 0.95,
+          lineCap: 'round',
+          lineJoin: 'round',
+        ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
+      );
+
+      _trackLayersReady = true;
+    } catch (e) {
+      debugPrint('Ошибка обновления слоя активного трека: $e');
     }
   }
 
@@ -608,6 +838,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           lineWidth: 3.0,
           lineOpacity: 0.35,
         ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addLineLayer(
@@ -618,6 +849,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           lineWidth: 1.5,
           lineOpacity: 0.9,
         ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addSymbolLayer(
@@ -634,6 +866,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           textOffset: [0, -0.7],
         ),
         minzoom: _labelsMinZoom,
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       _ringsLayersReady = true;
@@ -789,7 +1022,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     _lastBearingUpdate = now;
     _myBearing = bearing;
-    _syncMyLocationLayers(updateRings: false);
+    _syncMyLocationLayers(updateRings: false, updateTrack: false);
   }
 
   void _subscribeToGroupHunters() {
@@ -930,8 +1163,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         if (mounted) setState(() {});
         _startLocation();
         _startCompass();
-        _syncMyLocationLayers(updateRings: true);
+        _restoreActiveTrack();
+        _syncMyLocationLayers(updateRings: true, updateTrack: true);
       });
+      TrackRecorder.syncPendingTracks();
       if (mounted) {
         setState(() {});
         _updateOthersLayer();
@@ -974,8 +1209,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Выйти из группы?'),
-        content: const Text(
-            'Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
+        content: Text(
+          _isRecordingTrack
+              ? 'Сейчас идёт запись трека — при выходе она будет остановлена и сброшена. Выйти из группы?'
+              : 'Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.',
+        ),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
@@ -987,6 +1225,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     );
     if (confirmed != true) return;
+
+    if (_isRecordingTrack) {
+      await TrackRecorder.discardActiveTrack();
+    }
 
     final hunterId = AppSession.hunterId;
     await AppSession.clear();
@@ -1064,15 +1306,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _onPosition(geo.Position pos) async {
     if (!mounted) return;
     final newPos = LatLng(pos.latitude, pos.longitude);
+    _myAccuracy = pos.accuracy;
     _gpsHeading = pos.heading;
     _myBearing = _compassHeading ?? _gpsHeading ?? _myBearing;
 
+    bool trackUpdated = false;
+    if (_isRecordingTrack) {
+      final added = await TrackRecorder.appendPoint(
+        lat: pos.latitude,
+        lon: pos.longitude,
+        accuracy: pos.accuracy,
+      );
+      if (added != null && mounted) {
+        if (_activeTrackPoints.isNotEmpty) {
+          final prev = _activeTrackPoints.last;
+          _activeTrackDistance += geo.Geolocator.distanceBetween(
+            prev.lat,
+            prev.lon,
+            added.lat,
+            added.lon,
+          );
+        }
+        _activeTrackPoints = [..._activeTrackPoints, added];
+        trackUpdated = true;
+      }
+    }
+
+    if (!mounted) return;
     setState(() {
       _myPos = newPos;
       _locating = false;
     });
 
-    await _syncMyLocationLayers(updateRings: AppSettings.showDistanceRings);
+    await _syncMyLocationLayers(
+      updateRings: AppSettings.showDistanceRings,
+      updateTrack: trackUpdated,
+    );
     await _updateMyPositionInDb(newPos);
 
     if (_firstFix && _mapCtrl != null) {
@@ -1128,9 +1397,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     _userLayerReady = false;
     _ringsLayersReady = false;
+    _trackLayersReady = false;
     _myLayersSyncInProgress = false;
     _myLayersSyncPending = false;
     _myLayersPendingUpdateRings = false;
+    _myLayersPendingUpdateTrack = false;
     _lastBearingUpdate = null;
 
     try {
@@ -1231,6 +1502,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           circleStrokeColor: '#FFFFFF',
           circleStrokeWidth: ['get', 'strokeWidth'],
         ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addSymbolLayer(
@@ -1247,6 +1519,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           textOffset: [0, -1.8],
         ),
         minzoom: _labelsMinZoom,
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
     } catch (e) {
       debugPrint('Ошибка обновления слоя других охотников: $e');
@@ -1322,6 +1595,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           iconAllowOverlap: true,
           iconIgnorePlacement: true,
         ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addSymbolLayer(
@@ -1338,6 +1612,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           textOffset: [0, 2.0],
         ),
         minzoom: _labelsMinZoom,
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
     } catch (e) {
       debugPrint('Ошибка обновления слоя событий: $e');
@@ -1420,8 +1695,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
                     onPressed: () async {
+                      final note = noteCtrl.text.trim();
                       Navigator.of(ctx).pop();
-                      await _sendEvent(selectedType, noteCtrl.text.trim());
+                      await _sendEvent(selectedType, note);
                     },
                   ),
                 ],
@@ -1430,7 +1706,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           },
         );
       },
-    );
+    ).whenComplete(() => noteCtrl.dispose());
   }
 
   Widget _buildEventOption(
@@ -1549,6 +1825,59 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildTrackControl() {
+    if (!_isRecordingTrack) {
+      return FloatingActionButton.extended(
+        heroTag: 'track_fab',
+        onPressed: _startTrackRecording,
+        backgroundColor: const Color(0xFF2E4A2C),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.route),
+        label: const Text('Запись трека'),
+      );
+    }
+
+    final elapsed = _trackStartedAt != null
+        ? DateTime.now().toUtc().difference(_trackStartedAt!)
+        : Duration.zero;
+    final timeStr = TrackRecorder.formatDuration(
+      elapsed.isNegative ? Duration.zero : elapsed,
+    );
+    final distStr = TrackRecorder.formatDistance(_activeTrackDistance);
+
+    return Material(
+      color: const Color(0xFFB71C1C).withOpacity(0.92),
+      borderRadius: BorderRadius.circular(28),
+      elevation: 4,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(28),
+        onTap: _showStopTrackDialog,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.fiber_manual_record,
+                  color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              Text(
+                '$timeStr · $distStr',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.stop_circle_outlined,
+                  color: Colors.white, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final center = _lastCenter ?? _myPos ?? const LatLng(55.751244, 37.618423);
@@ -1606,7 +1935,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             icon: const Icon(Icons.more_vert, color: Colors.white),
             tooltip: 'Меню',
             onSelected: (value) {
-              if (value == 'rings') {
+              if (value == 'tracks_history') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const TracksHistoryScreen()),
+                );
+              } else if (value == 'rings') {
                 _toggleDistanceRings(!AppSettings.showDistanceRings);
               } else if (value == 'settings') {
                 Navigator.push(
@@ -1627,6 +1962,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               }
             },
             itemBuilder: (ctx) => [
+              const PopupMenuItem<String>(
+                value: 'tracks_history',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.history),
+                  title: Text('История треков'),
+                ),
+              ),
               CheckedPopupMenuItem<String>(
                 value: 'rings',
                 checked: AppSettings.showDistanceRings,
@@ -1706,6 +2049,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
               ),
             ),
+          Positioned(
+            left: 16,
+            bottom: 16,
+            child: _buildTrackControl(),
+          ),
         ],
       ),
       floatingActionButton: Column(
@@ -1789,7 +2137,3 @@ class _CompassNeedlePainter extends CustomPainter {
         ..strokeWidth = 1.0,
     );
   }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
