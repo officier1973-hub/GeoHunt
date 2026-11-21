@@ -8,7 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_session.dart';
-import 'app_settings.dart'; // ✅ Импорт настроек
+import 'app_settings.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
 
@@ -19,17 +19,14 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 
-  final session = Supabase.instance.client.auth.currentSession;
-  if (session == null) {
-    try {
-      await Supabase.instance.client.auth.signInAnonymously();
-    } catch (e) {
-      debugPrint('Ошибка анонимной авторизации: $e');
-    }
+  try {
+    await AppSession.ensureSignedIn();
+  } catch (e) {
+    debugPrint('Ошибка анонимной авторизации: $e');
   }
 
   await AppSession.load();
-  await AppSettings.load(); // ✅ Загружаем настройки
+  await AppSettings.load();
   await initializeService();
 
   if (AppSession.hasSession) {
@@ -56,10 +53,12 @@ Future<void> initializeService() async {
     importance: Importance.low,
   );
 
-  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
   if (Platform.isAndroid) {
     await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(channel);
   }
 
@@ -91,6 +90,10 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
+  StreamSubscription<Position>? posSub;
+  bool isAppForeground = true;
+  DateTime? lastDbUpdate;
+
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
       service.setAsForegroundService();
@@ -100,28 +103,14 @@ void onStart(ServiceInstance service) async {
     });
   }
 
-  service.on('stopService').listen((event) {
-    service.stopSelf();
-  });
-
-  service.on('onTaskRemoved').listen((event) {
-    service.stopSelf();
-  });
-
-  service.on('stopTracking').listen((event) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('active_hunter_id');
-    debugPrint("BG Service: Tracking stopped.");
-  });
-
   final prefs = await SharedPreferences.getInstance();
-  final hunterId = prefs.getString('active_hunter_id');
-  if (hunterId == null) return;
+  await prefs.reload();
 
-  // ✅ Читаем интервал из настроек
-  final dbInt = prefs.getInt('setting_db_interval') ?? 30;
-  final interval = Duration(seconds: dbInt);
-  DateTime? lastDbUpdate;
+  final hunterId = prefs.getString('active_hunter_id');
+  if (hunterId == null) {
+    await service.stopSelf();
+    return;
+  }
 
   try {
     Supabase.instance.client;
@@ -129,34 +118,81 @@ void onStart(ServiceInstance service) async {
     await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   }
 
-  // ✅ Читаем точность из настроек (по умолчанию high)
-  final accStr = prefs.getString('setting_accuracy') ?? 'high';
-  final acc = accStr == 'balanced' ? LocationAccuracy.medium : (accStr == 'low' ? LocationAccuracy.low : LocationAccuracy.high);
+  Future<void> startOrRestartStream() async {
+    await posSub?.cancel();
+    await prefs.reload();
 
-  Geolocator.getPositionStream(
-    locationSettings: LocationSettings(
-      accuracy: acc,
-      distanceFilter: 5,
-    ),
-  ).listen((position) async {
     final currentHunterId = prefs.getString('active_hunter_id');
-    if (currentHunterId == null) return;
+    if (currentHunterId == null) {
+      await service.stopSelf();
+      return;
+    }
 
-    // ✅ Троттлинг на основе настроек
-    final now = DateTime.now();
-    if (lastDbUpdate != null && now.difference(lastDbUpdate!) < interval) return;
-    lastDbUpdate = now;
+    final dbInt = prefs.getInt('setting_db_interval') ?? 30;
+    final interval = Duration(seconds: dbInt);
 
-    try {
-      await Supabase.instance.client.from('hunters').update({
-        'lat': position.latitude,
-        'lon': position.longitude,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', currentHunterId);
-    } catch (e) {
-      debugPrint('BG location update error: $e');
+    final accStr = prefs.getString('setting_accuracy') ?? 'high';
+    final acc = accStr == 'balanced'
+        ? LocationAccuracy.medium
+        : (accStr == 'low' ? LocationAccuracy.low : LocationAccuracy.high);
+
+    posSub = Geolocator.getPositionStream(
+      locationSettings: LocationSettings(
+        accuracy: acc,
+        distanceFilter: 5,
+      ),
+    ).listen((position) async {
+      if (isAppForeground) return;
+
+      final activeHunterId = prefs.getString('active_hunter_id');
+      if (activeHunterId == null) return;
+
+      final now = DateTime.now();
+      if (lastDbUpdate != null && now.difference(lastDbUpdate!) < interval) {
+        return;
+      }
+      lastDbUpdate = now;
+
+      try {
+        await Supabase.instance.client.from('hunters').update({
+          'lat': position.latitude,
+          'lon': position.longitude,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        }).eq('id', activeHunterId);
+      } catch (e) {
+        debugPrint('BG location update error: $e');
+      }
+    });
+  }
+
+  service.on('appState').listen((event) {
+    if (event != null && event['foreground'] is bool) {
+      isAppForeground = event['foreground'] as bool;
     }
   });
+
+  service.on('updateSettings').listen((event) async {
+    await startOrRestartStream();
+  });
+
+  service.on('stopService').listen((event) async {
+    await posSub?.cancel();
+    await service.stopSelf();
+  });
+
+  service.on('onTaskRemoved').listen((event) async {
+    await posSub?.cancel();
+    await service.stopSelf();
+  });
+
+  service.on('stopTracking').listen((event) async {
+    await prefs.remove('active_hunter_id');
+    await posSub?.cancel();
+    await service.stopSelf();
+    debugPrint('BG Service: Tracking stopped.');
+  });
+
+  await startOrRestartStream();
 }
 
 class GeoHuntApp extends StatelessWidget {
