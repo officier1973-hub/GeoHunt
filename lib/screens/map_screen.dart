@@ -2137,3 +2137,7 @@ class _CompassNeedlePainter extends CustomPainter {
         ..strokeWidth = 1.0,
     );
   }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
