@@ -26,6 +26,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? 'balanced'
             : 'low');
 
+    final ringsText =
+        AppSettings.ringDistancesMeters.map((d) => '$d м').join(', ');
+
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки')),
       body: ListView(
@@ -114,6 +117,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Карта и ориентирование',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              title: const Text('Круги расстояния вокруг меня'),
+              subtitle: Text('Радиусы: $ringsText'),
+              value: AppSettings.showDistanceRings,
+              onChanged: (val) async {
+                await AppSettings.saveShowDistanceRings(val);
+                if (mounted) setState(() {});
+              },
             ),
           ),
         ],
