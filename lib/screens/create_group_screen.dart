@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../app_session.dart';
 import 'name_input_screen.dart';
 
 class CreateGroupScreen extends StatefulWidget {
@@ -30,6 +31,28 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   Future<void> _createGroup() async {
     final supabase = Supabase.instance.client;
     String? lastError;
+
+    try {
+      final userId = await AppSession.ensureSignedIn();
+      if (userId == null) {
+        if (mounted) {
+          setState(() {
+            _error = 'Не удалось авторизоваться. Проверьте интернет.';
+            _creating = false;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = 'Ошибка подключения: $e';
+          _creating = false;
+        });
+      }
+      return;
+    }
+
     for (int attempt = 0; attempt < 5; attempt++) {
       final code = _generateCode();
       try {
