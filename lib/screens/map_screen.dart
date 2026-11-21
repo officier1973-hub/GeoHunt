@@ -46,6 +46,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double? _myBearing;
   double? _compassHeading;
   double? _gpsHeading;
+  double _mapBearing = 0.0;
 
   bool _locating = false;
   bool _firstFix = true;
@@ -59,16 +60,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _isSwitchingStyle = false;
 
   DateTime? _lastBearingUpdate;
-  static const _bearingUpdateInterval = Duration(milliseconds: 100);
+  static const _bearingUpdateInterval = Duration(milliseconds: 250);
 
   DateTime? _lastDbUpdate;
 
-  bool _userLayerReady = false;
-  bool _userUpdateInProgress = false;
-  bool _userUpdatePending = false;
-
-  bool _ringsUpdateInProgress = false;
-  bool _ringsUpdatePending = false;
+  bool _myLayersSyncInProgress = false;
+  bool _myLayersSyncPending = false;
+  bool _myLayersPendingUpdateRings = false;
 
   static const _staleThreshold = Duration(hours: 1);
   static const _heartbeatInterval = Duration(minutes: 15);
@@ -140,6 +138,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return '${meters ~/ 1000} км';
     }
     return '$meters м';
+  }
+
+  double _bearingDiffDeg(double a, double b) {
+    return ((a - b + 540.0) % 360.0 - 180.0).abs();
   }
 
   List<double> _destinationPoint(
@@ -241,7 +243,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (mounted) setState(() {});
       _startLocation();
       _startCompass();
-      _updateDistanceRingsLayer();
+      _syncMyLocationLayers(updateRings: true);
     });
 
     _subscribeToGroupHunters();
@@ -404,7 +406,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _toggleDistanceRings(bool value) async {
     await AppSettings.saveShowDistanceRings(value);
     if (mounted) setState(() {});
-    await _updateDistanceRingsLayer();
+    await _syncMyLocationLayers(updateRings: true);
   }
 
   Future<void> _cycleStyle() async {
@@ -479,34 +481,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
       }
 
-      try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('others_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('events_icons_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('events_labels_layer'); } catch (_) {}
-
-      _userLayerReady = false;
-
-      await _updateDistanceRingsLayer();
       await _updateOthersLayer();
       await _updateEventsLayer();
-      await _updateUserLocationLayer();
+      await _syncMyLocationLayers(updateRings: true);
     } catch (e) {
       debugPrint('Error updating style layers: $e');
     }
   }
 
-  Future<void> _updateDistanceRingsLayer() async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null) return;
-    if (_ringsUpdateInProgress) {
-      _ringsUpdatePending = true;
+  Future<void> _syncMyLocationLayers({bool updateRings = false}) async {
+    if (_mapCtrl == null) return;
+    if (_myLayersSyncInProgress) {
+      _myLayersSyncPending = true;
+      if (updateRings) _myLayersPendingUpdateRings = true;
       return;
     }
-    _ringsUpdateInProgress = true;
+    _myLayersSyncInProgress = true;
+
+    try {
+      if (updateRings) {
+        await _updateDistanceRingsLayerInternal();
+      }
+      await _updateUserLocationLayerInternal();
+    } finally {
+      _myLayersSyncInProgress = false;
+      if (_myLayersSyncPending) {
+        final needRings = _myLayersPendingUpdateRings;
+        _myLayersSyncPending = false;
+        _myLayersPendingUpdateRings = false;
+        _syncMyLocationLayers(updateRings: needRings);
+      }
+    }
+  }
+
+  Future<void> _updateDistanceRingsLayerInternal() async {
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
 
     try {
       try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
@@ -574,7 +584,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           lineWidth: 3.0,
           lineOpacity: 0.35,
         ),
-        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addLineLayer(
@@ -585,7 +594,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           lineWidth: 1.5,
           lineOpacity: 0.9,
         ),
-        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
 
       await ctrl.addSymbolLayer(
@@ -602,16 +610,47 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           textOffset: [0, -0.7],
         ),
         minzoom: _labelsMinZoom,
-        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
       );
     } catch (e) {
       debugPrint('Ошибка обновления слоя кругов расстояния: $e');
-    } finally {
-      _ringsUpdateInProgress = false;
-      if (_ringsUpdatePending) {
-        _ringsUpdatePending = false;
-        _updateDistanceRingsLayer();
-      }
+    }
+  }
+
+  Future<void> _updateUserLocationLayerInternal() async {
+    final ctrl = _mapCtrl;
+    final pos = _myPos;
+    if (ctrl == null || pos == null) return;
+
+    try {
+      try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
+      try { await ctrl.removeSource('user_location_source'); } catch (_) {}
+
+      final bearing = _myBearing ?? 0.0;
+      final geoJsonData = {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Point',
+          'coordinates': [pos.longitude, pos.latitude],
+        },
+        'properties': {'bearing': bearing},
+      };
+
+      await ctrl.addGeoJsonSource('user_location_source', geoJsonData);
+      await ctrl.addSymbolLayer(
+        'user_location_source',
+        'user_location_layer',
+        SymbolLayerProperties(
+          iconImage: 'user_arrow',
+          iconSize: 2.5,
+          iconRotate: ['get', 'bearing'],
+          iconRotationAlignment: 'map',
+          iconAnchor: 'center',
+          iconAllowOverlap: true,
+          iconIgnorePlacement: true,
+        ),
+      );
+    } catch (e) {
+      debugPrint('Ошибка обновления слоя пользователя: $e');
     }
   }
 
@@ -658,1031 +697,4 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } else if (type == 'wounded') {
         await _audioPlayer.play(AssetSource('sounds/sound_wounded.mp3'));
       } else if (type == 'harvested') {
-        await _audioPlayer.play(AssetSource('sounds/sound_harvested.mp3'));
-      }
-    } catch (e) {
-      debugPrint('Ошибка воспроизведения звука: $e');
-    }
-  }
-
-  void _startHeartbeat() {
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer =
-        Timer.periodic(_heartbeatInterval, (_) => _sendHeartbeat());
-  }
-
-  Future<void> _sendHeartbeat() async {
-    final hunterId = AppSession.hunterId;
-    if (hunterId == null) return;
-    try {
-      await Supabase.instance.client.from('hunters').update({
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', hunterId);
-    } catch (e) {
-      debugPrint('Heartbeat error: $e');
-    }
-  }
-
-  void _startFreshnessTimer() {
-    _freshnessTimer?.cancel();
-    _freshnessTimer = Timer.periodic(const Duration(seconds: 60), (_) {
-      if (mounted) _updateOthersLayer();
-    });
-  }
-
-  void _startCompass() {
-    _compassSub?.cancel();
-    _compassSub = FlutterCompass.events?.listen((CompassEvent event) {
-      final h = event.heading;
-      if (h != null && h >= 0) {
-        if (mounted) {
-          setState(() {
-            _compassHeading = h;
-          });
-        }
-        _applyBearing();
-      }
-    });
-  }
-
-  void _applyBearing() {
-    final bearing = _compassHeading ?? _gpsHeading;
-    if (bearing == null) return;
-    final now = DateTime.now();
-    if (_lastBearingUpdate != null &&
-        now.difference(_lastBearingUpdate!) < _bearingUpdateInterval) {
-      return;
-    }
-    _lastBearingUpdate = now;
-    _myBearing = bearing;
-    _updateUserLocationLayer();
-  }
-
-  void _subscribeToGroupHunters() {
-    final groupId = AppSession.groupId;
-    final myId = AppSession.hunterId;
-    if (groupId == null || myId == null) return;
-
-    _huntersSub?.cancel();
-    _huntersSub = Supabase.instance.client
-        .from('hunters')
-        .stream(primaryKey: ['id'])
-        .eq('group_id', groupId)
-        .listen((rows) {
-      for (final row in rows) {
-        final id = row['id'] as String;
-        final isSos = row['sos'] == true;
-
-        if (id == myId) {
-          _mySosActive = isSos;
-        } else {
-          if (isSos && _otherHuntersSosState[id] != true) {
-            _triggerIncomingSos(row['name'] as String? ?? 'Охотник');
-          }
-          _otherHuntersSosState[id] = isSos;
-        }
-      }
-
-      final others = rows
-          .where((r) => r['id'] != myId)
-          .where((r) => r['lat'] != null && r['lon'] != null)
-          .toList();
-      if (!mounted) return;
-      setState(() => _otherHunters = others);
-      _updateOthersLayer();
-    }, onError: (e) => debugPrint('Ошибка подписки на охотников: $e'));
-  }
-
-  Future<void> _triggerIncomingSos(String name) async {
-    try {
-      await _sirenPlayer.stop();
-      await _sirenPlayer.play(AssetSource('sounds/sos_siren.mp3'));
-    } catch (e) {
-      debugPrint('Ошибка сирены: $e');
-    }
-
-    if (!mounted) return;
-    if (_sosDialogOpen) {
-      _toast('SOS от $name!');
-      return;
-    }
-
-    _sosDialogOpen = true;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFFB71C1C),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.white, size: 32),
-              SizedBox(width: 8),
-              Text('SOS!',
-                  style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          content: Text(
-            'Охотник "$name" просит о помощи!\n\nПосмотрите на карту, его точка выделена красным.',
-            style: const TextStyle(color: Colors.white, fontSize: 16),
-          ),
-          actions: [
-            FilledButton(
-              style: FilledButton.styleFrom(
-                  backgroundColor: Colors.white, foregroundColor: Colors.red),
-              onPressed: () {
-                _sirenPlayer.stop();
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('Понятно'),
-            ),
-          ],
-        );
-      },
-    );
-    _sosDialogOpen = false;
-    await _sirenPlayer.stop();
-  }
-
-  Future<void> _toggleMySos() async {
-    final hunterId = AppSession.hunterId;
-    if (hunterId == null) return;
-
-    if (!_mySosActive) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Отправить сигнал SOS?'),
-          content: const Text(
-              'Все участники группы услышат громкую сирену и увидят вашу точку красным. Используйте только в экстренной ситуации.'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Отмена')),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.red),
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('SOS!'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-    }
-
-    try {
-      final newState = !_mySosActive;
-      await Supabase.instance.client.from('hunters').update({
-        'sos': newState,
-        'sos_at': newState ? DateTime.now().toUtc().toIso8601String() : null,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', hunterId);
-
-      setState(() => _mySosActive = newState);
-      if (newState) _toast('Сигнал SOS отправлен!');
-    } catch (e) {
-      _toast('Ошибка отправки SOS: $e');
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final service = FlutterBackgroundService();
-    if (state == AppLifecycleState.resumed) {
-      service.invoke('appState', {'foreground': true});
-      _rememberCamera();
-      AppSettings.load().then((_) {
-        if (mounted) setState(() {});
-        _startLocation();
-        _startCompass();
-        _updateDistanceRingsLayer();
-      });
-      if (mounted) {
-        setState(() {});
-        _updateOthersLayer();
-        _updateEventsLayer();
-        _sendHeartbeat();
-      }
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      service.invoke('appState', {'foreground': false});
-    }
-  }
-
-  void _rememberCamera() {
-    final cam = _mapCtrl?.cameraPosition;
-    if (cam != null) {
-      _lastCenter = cam.target;
-      _lastZoom = cam.zoom;
-    }
-  }
-
-  void _onCameraMoveEnd() => _rememberCamera();
-
-  Future<void> _logout() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Выйти из группы?'),
-        content: const Text(
-            'Вы покинете группу на этом устройстве. Чтобы вернуться, снова введите код.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Отмена')),
-          FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('Выйти')),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    final hunterId = AppSession.hunterId;
-    await AppSession.clear();
-    FlutterBackgroundService().invoke('stopService');
-
-    if (hunterId != null) {
-      try {
-        await Supabase.instance.client
-            .from('hunters')
-            .delete()
-            .eq('id', hunterId);
-      } catch (e) {
-        debugPrint('Не удалось удалить охотника при выходе: $e');
-      }
-    }
-
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
-      (_) => false,
-    );
-  }
-
-  Future<void> _centerOnMe() async {
-    final pos = _myPos;
-    final ctrl = _mapCtrl;
-    if (pos == null || ctrl == null) {
-      _pendingCenter = true;
-      await _startLocation();
-      return;
-    }
-    await ctrl.animateCamera(
-      CameraUpdate.newLatLngZoom(pos, 15),
-      duration: const Duration(milliseconds: 500),
-    );
-    _lastCenter = pos;
-    _lastZoom = 15;
-  }
-
-  Future<void> _startLocation() async {
-    final ok = await _ensurePermission();
-    if (!ok) {
-      _toast('Нет разрешения на геолокацию');
-      return;
-    }
-    if (mounted) setState(() => _locating = true);
-    _posSub?.cancel();
-
-    _posSub = geo.Geolocator.getPositionStream(
-      locationSettings: geo.LocationSettings(
-        accuracy: AppSettings.gpsAccuracy,
-        distanceFilter: 5,
-      ),
-    ).listen(_onPosition);
-
-    try {
-      final cur = await geo.Geolocator.getCurrentPosition(
-        locationSettings:
-            geo.LocationSettings(accuracy: AppSettings.gpsAccuracy),
-      );
-      _onPosition(cur);
-    } catch (_) {}
-  }
-
-  Future<bool> _ensurePermission() async {
-    if (!await geo.Geolocator.isLocationServiceEnabled()) return false;
-    var perm = await geo.Geolocator.checkPermission();
-    if (perm == geo.LocationPermission.denied) {
-      perm = await geo.Geolocator.requestPermission();
-    }
-    return perm == geo.LocationPermission.whileInUse ||
-        perm == geo.LocationPermission.always;
-  }
-
-  Future<void> _onPosition(geo.Position pos) async {
-    if (!mounted) return;
-    final newPos = LatLng(pos.latitude, pos.longitude);
-    _gpsHeading = pos.heading;
-
-    setState(() {
-      _myPos = newPos;
-      _locating = false;
-    });
-
-    _applyBearing();
-    if (AppSettings.showDistanceRings) {
-      _updateDistanceRingsLayer();
-    }
-    await _updateMyPositionInDb(newPos);
-
-    if (_firstFix && _mapCtrl != null) {
-      _firstFix = false;
-      await _mapCtrl!.animateCamera(
-        CameraUpdate.newLatLngZoom(newPos, 15),
-        duration: const Duration(milliseconds: 500),
-      );
-      _lastCenter = newPos;
-      _lastZoom = 15;
-      _pendingCenter = false;
-      return;
-    }
-
-    if (_pendingCenter && _mapCtrl != null) {
-      _pendingCenter = false;
-      await _mapCtrl!.animateCamera(
-        CameraUpdate.newLatLngZoom(newPos, 15),
-        duration: const Duration(milliseconds: 500),
-      );
-      _lastCenter = newPos;
-      _lastZoom = 15;
-    }
-  }
-
-  Future<void> _updateMyPositionInDb(LatLng pos) async {
-    final hunterId = AppSession.hunterId;
-    if (hunterId == null) return;
-
-    final now = DateTime.now();
-    if (_lastDbUpdate != null &&
-        now.difference(_lastDbUpdate!) < AppSettings.dbInterval) {
-      return;
-    }
-    _lastDbUpdate = now;
-
-    try {
-      await Supabase.instance.client.from('hunters').update({
-        'lat': pos.latitude,
-        'lon': pos.longitude,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('id', hunterId);
-    } catch (e) {
-      debugPrint('Не удалось обновить позицию в БД: $e');
-    }
-  }
-
-  void _onMapCreated(MapLibreMapController ctrl) => _mapCtrl = ctrl;
-
-  Future<void> _onStyleLoaded() async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null) return;
-
-    _userLayerReady = false;
-    _userUpdateInProgress = false;
-    _userUpdatePending = false;
-    _ringsUpdateInProgress = false;
-    _ringsUpdatePending = false;
-    _lastBearingUpdate = null;
-
-    try {
-      final arrowBytes = await rootBundle.load('assets/icons/arrow.png');
-      await ctrl.addImage('user_arrow', arrowBytes.buffer.asUint8List());
-
-      final spottedBytes = await _createMapIcon(
-          icon: Icons.remove_red_eye,
-          backgroundColor: const Color(0xFFFFC107));
-      await ctrl.addImage('event_spotted', spottedBytes);
-
-      final woundedBytes = await _createMapIcon(
-          icon: Icons.water_drop, backgroundColor: const Color(0xFFE64A19));
-      await ctrl.addImage('event_wounded', woundedBytes);
-
-      final harvestedBytes = await _createMapIcon(
-          icon: Icons.track_changes, backgroundColor: const Color(0xFF388E3C));
-      await ctrl.addImage('event_harvested', harvestedBytes);
-    } catch (e) {
-      debugPrint('Не удалось загрузить/сгенерировать иконки: $e');
-    }
-
-    await _updateStyleLayers();
-  }
-
-  Future<void> _updateUserLocationLayer() async {
-    final ctrl = _mapCtrl;
-    final pos = _myPos;
-    if (ctrl == null || pos == null) return;
-    if (_userUpdateInProgress) {
-      _userUpdatePending = true;
-      return;
-    }
-    _userUpdateInProgress = true;
-
-    try {
-      final bearing = _myBearing ?? 0.0;
-      final geoJsonData = {
-        'type': 'Feature',
-        'geometry': {
-          'type': 'Point',
-          'coordinates': [pos.longitude, pos.latitude],
-        },
-        'properties': {'bearing': bearing},
-      };
-
-      try { await ctrl.removeSource('user_location_source'); } catch (_) {}
-      await ctrl.addGeoJsonSource('user_location_source', geoJsonData);
-
-      if (!_userLayerReady) {
-        await ctrl.addSymbolLayer(
-          'user_location_source',
-          'user_location_layer',
-          SymbolLayerProperties(
-            iconImage: 'user_arrow',
-            iconSize: 2.5,
-            iconRotate: ['get', 'bearing'],
-            iconRotationAlignment: 'map',
-            iconAllowOverlap: true,
-            iconIgnorePlacement: true,
-          ),
-        );
-        _userLayerReady = true;
-      }
-    } catch (e) {
-      debugPrint('Ошибка обновления слоя пользователя: $e');
-    } finally {
-      _userUpdateInProgress = false;
-      if (_userUpdatePending) {
-        _userUpdatePending = false;
-        _updateUserLocationLayer();
-      }
-    }
-  }
-
-  Future<void> _updateOthersLayer() async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null) return;
-
-    try {
-      try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('others_layer'); } catch (_) {}
-      try { await ctrl.removeSource('others_source'); } catch (_) {}
-
-      if (_otherHunters.isEmpty) return;
-      final now = DateTime.now().toUtc();
-
-      final features = _otherHunters.map((h) {
-        final name = (h['name'] ?? '').toString();
-        final isSos = h['sos'] == true;
-        final dt = _parseUpdatedAt(h['updated_at']);
-        final age = dt != null ? now.difference(dt) : null;
-        final isStale = age != null && age > _staleThreshold;
-
-        String color;
-        double radius;
-        double strokeWidth;
-
-        if (isSos) {
-          color = '#FF0000';
-          radius = 18.0;
-          strokeWidth = 5.0;
-        } else if (isStale) {
-          color = '#9E9E9E';
-          radius = 12.0;
-          strokeWidth = 3.0;
-        } else {
-          color = (h['color'] ?? '#1976D2').toString();
-          radius = 12.0;
-          strokeWidth = 3.0;
-        }
-
-        String label = name;
-        if (isSos) {
-          label = 'SOS! $name';
-        } else if (age != null && age > const Duration(minutes: 5)) {
-          label = '$name · ${_formatAge(age)}';
-        }
-
-        return {
-          'type': 'Feature',
-          'geometry': {
-            'type': 'Point',
-            'coordinates': [h['lon'], h['lat']],
-          },
-          'properties': {
-            'name': name,
-            'color': color,
-            'label': label,
-            'radius': radius,
-            'strokeWidth': strokeWidth,
-          },
-        };
-      }).toList();
-
-      final featureCollection = {
-        'type': 'FeatureCollection',
-        'features': features,
-      };
-      await ctrl.addGeoJsonSource('others_source', featureCollection);
-
-      await ctrl.addCircleLayer(
-        'others_source',
-        'others_layer',
-        CircleLayerProperties(
-          circleColor: ['to-color', ['get', 'color']],
-          circleRadius: ['get', 'radius'],
-          circleStrokeColor: '#FFFFFF',
-          circleStrokeWidth: ['get', 'strokeWidth'],
-        ),
-      );
-
-      await ctrl.addSymbolLayer(
-        'others_source',
-        'others_labels_layer',
-        SymbolLayerProperties(
-          textField: ['get', 'label'],
-          textSize: 12,
-          textColor: '#FFFFFF',
-          textHaloColor: '#000000',
-          textHaloWidth: 2,
-          textFont: ['Noto Sans Regular'],
-          textAllowOverlap: false,
-          textOffset: [0, -1.8],
-        ),
-        minzoom: _labelsMinZoom,
-      );
-    } catch (e) {
-      debugPrint('Ошибка обновления слоя других охотников: $e');
-    }
-  }
-
-  Future<void> _updateEventsLayer() async {
-    final ctrl = _mapCtrl;
-    if (ctrl == null) return;
-
-    try {
-      try { await ctrl.removeLayer('events_labels_layer'); } catch (_) {}
-      try { await ctrl.removeLayer('events_icons_layer'); } catch (_) {}
-      try { await ctrl.removeSource('events_source'); } catch (_) {}
-
-      if (_events.isEmpty) return;
-      final now = DateTime.now().toUtc();
-
-      final features = _events.map((e) {
-        final type = e['type'] as String;
-        final hunterName = e['hunter_name'] as String? ?? 'Охотник';
-        final note = e['note'] as String?;
-        final dt = _parseUpdatedAt(e['created_at']);
-        final age = dt != null ? now.difference(dt) : null;
-
-        String typeLabel = '';
-        String iconId = 'event_spotted';
-
-        if (type == 'spotted') {
-          typeLabel = 'Видел';
-          iconId = 'event_spotted';
-        } else if (type == 'wounded') {
-          typeLabel = 'Подранен';
-          iconId = 'event_wounded';
-        } else if (type == 'harvested') {
-          typeLabel = 'Добыт';
-          iconId = 'event_harvested';
-        }
-
-        String label = '$hunterName: $typeLabel';
-        if (note != null && note.isNotEmpty) {
-          label += ' ($note)';
-        }
-        if (age != null && age > const Duration(minutes: 5)) {
-          label += ' · ${_formatAge(age)}';
-        }
-
-        return {
-          'type': 'Feature',
-          'geometry': {
-            'type': 'Point',
-            'coordinates': [e['lon'], e['lat']],
-          },
-          'properties': {
-            'icon': iconId,
-            'label': label,
-          },
-        };
-      }).toList();
-
-      final featureCollection = {
-        'type': 'FeatureCollection',
-        'features': features,
-      };
-      await ctrl.addGeoJsonSource('events_source', featureCollection);
-
-      await ctrl.addSymbolLayer(
-        'events_source',
-        'events_icons_layer',
-        SymbolLayerProperties(
-          iconImage: ['get', 'icon'],
-          iconSize: 1.5,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-        ),
-      );
-
-      await ctrl.addSymbolLayer(
-        'events_source',
-        'events_labels_layer',
-        SymbolLayerProperties(
-          textField: ['get', 'label'],
-          textSize: 11,
-          textColor: '#FFFFFF',
-          textHaloColor: '#000000',
-          textHaloWidth: 2,
-          textFont: ['Noto Sans Regular'],
-          textAllowOverlap: false,
-          textOffset: [0, 2.0],
-        ),
-        minzoom: _labelsMinZoom,
-      );
-    } catch (e) {
-      debugPrint('Ошибка обновления слоя событий: $e');
-    }
-  }
-
-  void _showEventBottomSheet() {
-    if (_myPos == null) {
-      _toast('Ожидание GPS-сигнала...');
-      return;
-    }
-
-    String selectedType = 'spotted';
-    final noteCtrl = TextEditingController();
-
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 24,
-                right: 24,
-                top: 8,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'Событие на охоте',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      _buildEventOption(
-                          'spotted',
-                          'Видел',
-                          Colors.amber,
-                          selectedType,
-                          (val) => setModalState(() => selectedType = val)),
-                      const SizedBox(width: 8),
-                      _buildEventOption(
-                          'wounded',
-                          'Подранен',
-                          Colors.deepOrange,
-                          selectedType,
-                          (val) => setModalState(() => selectedType = val)),
-                      const SizedBox(width: 8),
-                      _buildEventOption(
-                          'harvested',
-                          'Добыт',
-                          Colors.green,
-                          selectedType,
-                          (val) => setModalState(() => selectedType = val)),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  TextField(
-                    controller: noteCtrl,
-                    maxLines: 2,
-                    maxLength: 200,
-                    decoration: const InputDecoration(
-                      labelText: 'Заметка (необязательно)',
-                      hintText: 'Например: крупный секач, ушёл на север',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    icon: const Icon(Icons.send),
-                    label: const Text('Отправить событие'),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    onPressed: () async {
-                      Navigator.of(ctx).pop();
-                      await _sendEvent(selectedType, noteCtrl.text.trim());
-                    },
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildEventOption(
-    String type,
-    String label,
-    MaterialColor color,
-    String selectedType,
-    Function(String) onSelect,
-  ) {
-    final isSelected = type == selectedType;
-    return Expanded(
-      child: InkWell(
-        onTap: () => onSelect(type),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: isSelected ? color.withOpacity(0.2) : Colors.transparent,
-            border: Border.all(
-              color: isSelected ? color : Colors.white24,
-              width: isSelected ? 2 : 1,
-            ),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Column(
-            children: [
-              Icon(Icons.location_on, color: color, size: 28),
-              const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? Colors.white : Colors.white70,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _sendEvent(String type, String note) async {
-    final groupId = AppSession.groupId;
-    final hunterId = AppSession.hunterId;
-    final hunterName = AppSession.hunterName;
-    final pos = _myPos;
-
-    if (groupId == null ||
-        hunterId == null ||
-        hunterName == null ||
-        pos == null) {
-      return;
-    }
-
-    try {
-      await Supabase.instance.client.from('events').insert({
-        'group_id': groupId,
-        'hunter_id': hunterId,
-        'hunter_name': hunterName,
-        'type': type,
-        'lat': pos.latitude,
-        'lon': pos.longitude,
-        'note': note.isEmpty ? null : note,
-      });
-      _toast('Событие добавлено');
-    } catch (e) {
-      _toast('Ошибка отправки события: $e');
-    }
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Widget _buildCompass() {
-    final heading = _compassHeading ?? 0.0;
-    return GestureDetector(
-      onTap: () {
-        _mapCtrl?.animateCamera(
-          CameraUpdate.bearingTo(0),
-          duration: const Duration(milliseconds: 500),
-        );
-      },
-      child: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.35),
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2),
-        ),
-        child: Center(
-          child: Transform.rotate(
-            angle: -heading * (math.pi / 180),
-            child: const Icon(
-              Icons.navigation,
-              color: Colors.white,
-              size: 28,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final center = _lastCenter ?? _myPos ?? const LatLng(55.751244, 37.618423);
-    final zoom = _lastZoom ?? (_myPos != null ? 15.0 : 3.0);
-
-    final myRole = _roleLabel(AppSession.hunterRole);
-    final myTitle = myRole.isEmpty
-        ? (AppSession.hunterName ?? '')
-        : '${AppSession.hunterName ?? ''} · $myRole';
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Группа ${AppSession.groupCode ?? ""}',
-                style: const TextStyle(fontSize: 12),
-                overflow: TextOverflow.ellipsis),
-            Text(myTitle,
-                style:
-                    const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                overflow: TextOverflow.ellipsis),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.people, color: Colors.white),
-            tooltip: 'Список группы',
-            onPressed: _showLegend,
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.warning_rounded,
-              color: _mySosActive ? Colors.red : Colors.white,
-            ),
-            tooltip: _mySosActive ? 'Отменить SOS' : 'Подать сигнал SOS',
-            onPressed: _toggleMySos,
-          ),
-          TextButton.icon(
-            onPressed: _isSwitchingStyle ? null : _cycleStyle,
-            icon: _isSwitchingStyle
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.layers, color: Colors.white, size: 18),
-            label: Text(
-              _isSwitchingStyle ? '...' : _styleNames[_currentStyleIndex],
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-            ),
-          ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
-            tooltip: 'Меню',
-            onSelected: (value) {
-              if (value == 'rings') {
-                _toggleDistanceRings(!AppSettings.showDistanceRings);
-              } else if (value == 'settings') {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                ).then((_) async {
-                  await AppSettings.load();
-                  if (mounted) setState(() {});
-                  _startLocation();
-                  _startCompass();
-                  await _updateDistanceRingsLayer();
-                  FlutterBackgroundService().invoke('updateSettings');
-                });
-              } else if (value == 'offline') {
-                _toggleOfflineMode(!_isOfflineMode);
-              } else if (value == 'logout') {
-                _logout();
-              }
-            },
-            itemBuilder: (ctx) => [
-              CheckedPopupMenuItem<String>(
-                value: 'rings',
-                checked: AppSettings.showDistanceRings,
-                child: Text(
-                  'Круги (${AppSettings.ringDistancesMeters.join('/')} м)',
-                ),
-              ),
-              const PopupMenuItem<String>(
-                value: 'settings',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.settings),
-                  title: Text('Настройки'),
-                ),
-              ),
-              CheckedPopupMenuItem<String>(
-                value: 'offline',
-                checked: _isOfflineMode,
-                child: const Text('Офлайн-режим (кэш)'),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem<String>(
-                value: 'logout',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.logout, color: Colors.redAccent),
-                  title: Text('Выйти из группы',
-                      style: TextStyle(color: Colors.redAccent)),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          MapLibreMap(
-            styleString: _baseStyleUrl,
-            initialCameraPosition: CameraPosition(
-              target: center,
-              zoom: zoom,
-            ),
-            onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _onStyleLoaded,
-            trackCameraPosition: true,
-            onCameraIdle: _onCameraMoveEnd,
-            compassEnabled: false,
-          ),
-          Positioned(
-            top: 16,
-            right: 16,
-            child: _buildCompass(),
-          ),
-          if (_isOfflineMode)
-            Positioned(
-              top: 16,
-              left: 16,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade900.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.cloud_off, size: 16, color: Colors.white),
-                    SizedBox(width: 6),
-                    Text('Офлайн-кэш',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          FloatingActionButton(
-            heroTag: 'event_fab',
-            onPressed: _showEventBottomSheet,
-            backgroundColor: const Color(0xFFE64A19),
-            tooltip: 'Добавить событие',
-            child: const Icon(Icons.add_alert, color: Colors.white),
-          ),
-          const SizedBox(height: 16),
-          FloatingActionButton(
-            heroTag: 'location_fab',
-            onPressed: _locating ? null : _centerOnMe,
-            tooltip: 'Найти меня',
-            child: _locating
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.gps_fixed),
-          ),
-        ],
-      ),
-    );
-  }
-}
+        await _audioPlayer.play(AssetSource('
