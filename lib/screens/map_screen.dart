@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:audioplayers/audioplayers.dart';
@@ -66,6 +67,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _userUpdateInProgress = false;
   bool _userUpdatePending = false;
 
+  bool _ringsUpdateInProgress = false;
+  bool _ringsUpdatePending = false;
+
   static const _staleThreshold = Duration(hours: 1);
   static const _heartbeatInterval = Duration(minutes: 15);
 
@@ -98,7 +102,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  Color _safeParseHexColor(String? raw, {Color fallback = const Color(0xFF1976D2)}) {
+  Color _safeParseHexColor(String? raw,
+      {Color fallback = const Color(0xFF1976D2)}) {
     if (raw == null) return fallback;
     final cleaned = raw.replaceAll('#', '').trim();
     if (cleaned.length != 6 && cleaned.length != 8) return fallback;
@@ -113,7 +118,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (s.isEmpty) return null;
     final hasTz = s.endsWith('Z') ||
         RegExp(r'[+\-]\d{2}:?\d{2}$').hasMatch(s) ||
-        RegExp(r'[+\-]\d{2}$').hasMatch(s.substring(s.length > 3 ? s.length - 3 : 0));
+        RegExp(r'[+\-]\d{2}$')
+            .hasMatch(s.substring(s.length > 3 ? s.length - 3 : 0));
     final normalized = hasTz ? s : '${s}Z';
     final dt = DateTime.tryParse(normalized);
     return dt?.toUtc();
@@ -127,6 +133,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
     if (age.inMinutes >= 1) return '${age.inMinutes} мин';
     return 'меньше минуты';
+  }
+
+  String _formatRingDistance(int meters) {
+    if (meters >= 1000 && meters % 1000 == 0) {
+      return '${meters ~/ 1000} км';
+    }
+    return '$meters м';
+  }
+
+  List<double> _destinationPoint(
+      LatLng center, double distanceMeters, double bearingRad) {
+    const double earthRadius = 6371000.0;
+    final lat1 = center.latitude * math.pi / 180.0;
+    final lon1 = center.longitude * math.pi / 180.0;
+    final angularDist = distanceMeters / earthRadius;
+
+    final sinLat1 = math.sin(lat1);
+    final cosLat1 = math.cos(lat1);
+    final sinDist = math.sin(angularDist);
+    final cosDist = math.cos(angularDist);
+
+    final lat2 = math.asin(
+      sinLat1 * cosDist + cosLat1 * sinDist * math.cos(bearingRad),
+    );
+    final lon2 = lon1 +
+        math.atan2(
+          math.sin(bearingRad) * sinDist * cosLat1,
+          cosDist - sinLat1 * math.sin(lat2),
+        );
+
+    return [lon2 * 180.0 / math.pi, lat2 * 180.0 / math.pi];
   }
 
   Future<Uint8List> _createMapIcon({
@@ -201,8 +238,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ));
 
     AppSettings.load().then((_) {
+      if (mounted) setState(() {});
       _startLocation();
       _startCompass();
+      _updateDistanceRingsLayer();
     });
 
     _subscribeToGroupHunters();
@@ -362,6 +401,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _toggleDistanceRings(bool value) async {
+    await AppSettings.saveShowDistanceRings(value);
+    if (mounted) setState(() {});
+    await _updateDistanceRingsLayer();
+  }
+
   Future<void> _cycleStyle() async {
     if (_isSwitchingStyle) return;
 
@@ -434,6 +479,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         );
       }
 
+      try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
       try { await ctrl.removeLayer('user_location_layer'); } catch (_) {}
       try { await ctrl.removeLayer('others_layer'); } catch (_) {}
       try { await ctrl.removeLayer('others_labels_layer'); } catch (_) {}
@@ -442,11 +490,128 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       _userLayerReady = false;
 
-      await _updateUserLocationLayer();
+      await _updateDistanceRingsLayer();
       await _updateOthersLayer();
       await _updateEventsLayer();
+      await _updateUserLocationLayer();
     } catch (e) {
       debugPrint('Error updating style layers: $e');
+    }
+  }
+
+  Future<void> _updateDistanceRingsLayer() async {
+    final ctrl = _mapCtrl;
+    if (ctrl == null) return;
+    if (_ringsUpdateInProgress) {
+      _ringsUpdatePending = true;
+      return;
+    }
+    _ringsUpdateInProgress = true;
+
+    try {
+      try { await ctrl.removeLayer('distance_rings_labels_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('distance_rings_casing_layer'); } catch (_) {}
+      try { await ctrl.removeSource('distance_rings_labels_source'); } catch (_) {}
+      try { await ctrl.removeSource('distance_rings_source'); } catch (_) {}
+
+      final pos = _myPos;
+      if (!AppSettings.showDistanceRings ||
+          pos == null ||
+          AppSettings.ringDistancesMeters.isEmpty) {
+        return;
+      }
+
+      const int segments = 64;
+      final ringFeatures = <Map<String, dynamic>>[];
+      final labelFeatures = <Map<String, dynamic>>[];
+
+      for (final meters in AppSettings.ringDistancesMeters) {
+        final coords = <List<double>>[];
+        for (int i = 0; i < segments; i++) {
+          final theta = (2.0 * math.pi * i) / segments;
+          coords.add(_destinationPoint(pos, meters.toDouble(), theta));
+        }
+        if (coords.isNotEmpty) {
+          coords.add(List<double>.from(coords.first));
+        }
+
+        ringFeatures.add({
+          'type': 'Feature',
+          'geometry': {
+            'type': 'LineString',
+            'coordinates': coords,
+          },
+          'properties': {'meters': meters},
+        });
+
+        final northPoint = _destinationPoint(pos, meters.toDouble(), 0.0);
+        labelFeatures.add({
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Point',
+            'coordinates': northPoint,
+          },
+          'properties': {'label': _formatRingDistance(meters)},
+        });
+      }
+
+      await ctrl.addGeoJsonSource('distance_rings_source', {
+        'type': 'FeatureCollection',
+        'features': ringFeatures,
+      });
+
+      await ctrl.addGeoJsonSource('distance_rings_labels_source', {
+        'type': 'FeatureCollection',
+        'features': labelFeatures,
+      });
+
+      await ctrl.addLineLayer(
+        'distance_rings_source',
+        'distance_rings_casing_layer',
+        LineLayerProperties(
+          lineColor: '#000000',
+          lineWidth: 3.0,
+          lineOpacity: 0.35,
+        ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
+      );
+
+      await ctrl.addLineLayer(
+        'distance_rings_source',
+        'distance_rings_layer',
+        LineLayerProperties(
+          lineColor: '#29B6F6',
+          lineWidth: 1.5,
+          lineOpacity: 0.9,
+        ),
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
+      );
+
+      await ctrl.addSymbolLayer(
+        'distance_rings_labels_source',
+        'distance_rings_labels_layer',
+        SymbolLayerProperties(
+          textField: ['get', 'label'],
+          textSize: 11,
+          textColor: '#E1F5FE',
+          textHaloColor: '#000000',
+          textHaloWidth: 1.8,
+          textFont: ['Noto Sans Regular'],
+          textAllowOverlap: false,
+          textOffset: [0, -0.7],
+        ),
+        minzoom: _labelsMinZoom,
+        belowLayerId: _userLayerReady ? 'user_location_layer' : null,
+      );
+    } catch (e) {
+      debugPrint('Ошибка обновления слоя кругов расстояния: $e');
+    } finally {
+      _ringsUpdateInProgress = false;
+      if (_ringsUpdatePending) {
+        _ringsUpdatePending = false;
+        _updateDistanceRingsLayer();
+      }
     }
   }
 
@@ -688,8 +853,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       service.invoke('appState', {'foreground': true});
       _rememberCamera();
       AppSettings.load().then((_) {
+        if (mounted) setState(() {});
         _startLocation();
         _startCompass();
+        _updateDistanceRingsLayer();
       });
       if (mounted) {
         setState(() {});
@@ -816,6 +983,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
 
     _applyBearing();
+    if (AppSettings.showDistanceRings) {
+      _updateDistanceRingsLayer();
+    }
     await _updateMyPositionInDb(newPos);
 
     if (_firstFix && _mapCtrl != null) {
@@ -872,6 +1042,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _userLayerReady = false;
     _userUpdateInProgress = false;
     _userUpdatePending = false;
+    _ringsUpdateInProgress = false;
+    _ringsUpdatePending = false;
     _lastBearingUpdate = null;
 
     try {
@@ -1316,7 +1488,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         child: Center(
           child: Transform.rotate(
-            angle: -heading * (3.141592653589793 / 180),
+            angle: -heading * (math.pi / 180),
             child: const Icon(
               Icons.navigation,
               color: Colors.white,
@@ -1385,14 +1557,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             icon: const Icon(Icons.more_vert, color: Colors.white),
             tooltip: 'Меню',
             onSelected: (value) {
-              if (value == 'settings') {
+              if (value == 'rings') {
+                _toggleDistanceRings(!AppSettings.showDistanceRings);
+              } else if (value == 'settings') {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const SettingsScreen()),
                 ).then((_) async {
                   await AppSettings.load();
+                  if (mounted) setState(() {});
                   _startLocation();
                   _startCompass();
+                  await _updateDistanceRingsLayer();
                   FlutterBackgroundService().invoke('updateSettings');
                 });
               } else if (value == 'offline') {
@@ -1402,6 +1578,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               }
             },
             itemBuilder: (ctx) => [
+              CheckedPopupMenuItem<String>(
+                value: 'rings',
+                checked: AppSettings.showDistanceRings,
+                child: Text(
+                  'Круги (${AppSettings.ringDistancesMeters.join('/')} м)',
+                ),
+              ),
               const PopupMenuItem<String>(
                 value: 'settings',
                 child: ListTile(
