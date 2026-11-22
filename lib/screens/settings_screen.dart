@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import '../app_settings.dart';
+import 'onboarding_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -304,6 +305,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ],
                   ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Инструкция и обучение',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('Показывать инструкцию при запуске'),
+                  subtitle: const Text('Экраны возможностей перед стартом'),
+                  value: !AppSettings.skipOnboarding,
+                  onChanged: (val) async {
+                    await AppSettings.saveSkipOnboarding(!val);
+                    if (mounted) setState(() {});
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('Открыть инструкцию'),
+                  subtitle: const Text('Просмотреть все возможности GeoHunt'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            const OnboardingScreen(isReviewMode: true),
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
