@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../track_exporter.dart';
 import '../track_recorder.dart';
 import 'track_preview_screen.dart';
 
@@ -194,10 +195,22 @@ class _TracksHistoryScreenState extends State<TracksHistoryScreen> {
                             ],
                           ),
                           isThreeLine: true,
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                            tooltip: 'Удалить',
-                            onPressed: () => _deleteTrack(t),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.share_outlined),
+                                tooltip: 'Экспорт GPX / CSV',
+                                onPressed: () =>
+                                    TrackExporter.showTrackExportSheet(context, t),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    color: Colors.redAccent),
+                                tooltip: 'Удалить',
+                                onPressed: () => _deleteTrack(t),
+                              ),
+                            ],
                           ),
                           onTap: () {
                             Navigator.push(
