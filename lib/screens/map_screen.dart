@@ -2024,6 +2024,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   'Круги (${AppSettings.ringDistancesMeters.map(AppSettings.formatRingDistance).join(' / ')})',
                 ),
               ),
+PopupMenuItem<String>(
+                value: 'offline',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.cloud_off,
+                    color: _isOfflineMode ? Colors.orangeAccent : Colors.white70,
+                  ),
+                  title: const Text('Офлайн-режим (кэш)'),
+                  trailing: Icon(
+                    _isOfflineMode
+                        ? Icons.check_box
+                        : Icons.check_box_outline_blank,
+                    color: _isOfflineMode ? Colors.orangeAccent : Colors.white54,
+                    size: 20,
+                  ),
+                ),
+              ),
               const PopupMenuItem<String>(
                 value: 'settings',
                 child: ListTile(
@@ -2031,11 +2049,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   leading: Icon(Icons.settings),
                   title: Text('Настройки'),
                 ),
-              ),
-              CheckedPopupMenuItem<String>(
-                value: 'offline',
-                checked: _isOfflineMode,
-                child: const Text('Офлайн-режим (кэш)'),
               ),
               const PopupMenuDivider(),
               const PopupMenuItem<String>(
