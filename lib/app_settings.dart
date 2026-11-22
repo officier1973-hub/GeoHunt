@@ -14,6 +14,13 @@ class AppSettings {
   static bool showDistanceRings = false;
   static List<int> ringDistancesMeters = List<int>.from(defaultRingDistances);
 
+  static String formatRingDistance(int meters) {
+    if (meters >= 1000 && meters % 1000 == 0) {
+      return '${meters ~/ 1000} км';
+    }
+    return '$meters м';
+  }
+
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
 
