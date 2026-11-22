@@ -6,6 +6,7 @@ class AppSettings {
   static const _kDbInterval = 'setting_db_interval';
   static const _kShowDistanceRings = 'setting_show_distance_rings';
   static const _kRingDistances = 'setting_ring_distances';
+  static const _kSkipOnboarding = 'setting_skip_onboarding';
 
   static const List<int> defaultRingDistances = [100, 200, 300];
 
@@ -13,6 +14,7 @@ class AppSettings {
   static Duration dbInterval = const Duration(seconds: 30);
   static bool showDistanceRings = false;
   static List<int> ringDistancesMeters = List<int>.from(defaultRingDistances);
+  static bool skipOnboarding = false;
 
   static String formatRingDistance(int meters) {
     if (meters >= 1000 && meters % 1000 == 0) {
@@ -43,6 +45,7 @@ class AppSettings {
     dbInterval = Duration(seconds: dbInt);
 
     showDistanceRings = prefs.getBool(_kShowDistanceRings) ?? false;
+    skipOnboarding = prefs.getBool(_kSkipOnboarding) ?? false;
 
     final rawRings = prefs.getStringList(_kRingDistances);
     if (rawRings != null && rawRings.isNotEmpty) {
@@ -85,6 +88,12 @@ class AppSettings {
       _kRingDistances,
       normalized.map((e) => e.toString()).toList(),
     );
+    await load();
+  }
+
+  static Future<void> saveSkipOnboarding(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kSkipOnboarding, value);
     await load();
   }
 }
