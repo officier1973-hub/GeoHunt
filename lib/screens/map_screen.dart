@@ -15,6 +15,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_session.dart';
 import '../app_settings.dart';
+import '../track_exporter.dart';
 import '../track_recorder.dart';
 import 'home_screen.dart';
 import 'settings_screen.dart';
@@ -93,7 +94,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   static const String _satelliteTileUrl =
-      'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
   static const String _baseStyleUrl =
       'https://tiles.openfreemap.org/styles/positron';
 
@@ -147,12 +148,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return 'меньше минуты';
   }
 
-  String _formatRingDistance(int meters) {
-    if (meters >= 1000 && meters % 1000 == 0) {
-      return '${meters ~/ 1000} км';
-    }
-    return '$meters м';
-  }
+  String _formatRingDistance(int meters) => AppSettings.formatRingDistance(meters);
 
   double _bearingDiffDeg(double a, double b) {
     return ((a - b + 540.0) % 360.0 - 180.0).abs();
@@ -253,14 +249,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
     ));
 
-    AppSettings.load().then((_) {
+    AppSettings.load().then((_) async {
+      await _restoreActiveTrack();
       if (mounted) setState(() {});
       _startLocation();
       _startCompass();
       _syncMyLocationLayers(updateRings: true, updateTrack: true);
     });
 
-    _restoreActiveTrack();
     TrackRecorder.syncPendingTracks();
 
     _subscribeToGroupHunters();
@@ -560,6 +556,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     await _syncMyLocationLayers(updateRings: true);
   }
 
+  Future<void> _exportGroupEvents() async {
+    if (_events.isEmpty) {
+      _toast('Событий в группе пока нет');
+      return;
+    }
+    final exportEvents = _events.map(ExportEvent.fromMap).toList();
+    await TrackExporter.showEventsExportSheet(
+      context,
+      events: exportEvents,
+      groupCode: AppSession.groupCode,
+    );
+  }
+
   Future<void> _cycleStyle() async {
     if (_isSwitchingStyle) return;
 
@@ -582,7 +591,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     try {
       try { await ctrl.removeLayer('satellite_layer'); } catch (_) {}
       try { await ctrl.removeSource('satellite_source'); } catch (_) {}
+      try { await ctrl.removeLayer('waterway_layer'); } catch (_) {}
       try { await ctrl.removeLayer('roads_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('roads_casing_layer'); } catch (_) {}
       try { await ctrl.removeLayer('labels_layer'); } catch (_) {}
 
       if (_currentStyleIndex > 0) {
@@ -592,9 +603,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             tiles: [_satelliteTileUrl],
             tileSize: 256,
             minzoom: 0,
-            maxzoom: 14,
+            maxzoom: 17,
             attribution:
-                '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+                'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
           ),
         );
         await ctrl.addRasterLayer(
@@ -607,11 +618,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (_currentStyleIndex == 2) {
         await ctrl.addLineLayer(
           'openmaptiles',
+          'waterway_layer',
+          LineLayerProperties(
+            lineColor: '#4FC3F7',
+            lineWidth: 1.2,
+            lineOpacity: 0.65,
+          ),
+          sourceLayer: 'waterway',
+        );
+
+        await ctrl.addLineLayer(
+          'openmaptiles',
+          'roads_casing_layer',
+          LineLayerProperties(
+            lineColor: '#000000',
+            lineWidth: 3.0,
+            lineOpacity: 0.45,
+            lineCap: 'round',
+            lineJoin: 'round',
+          ),
+          sourceLayer: 'transportation',
+        );
+
+        await ctrl.addLineLayer(
+          'openmaptiles',
           'roads_layer',
           LineLayerProperties(
-            lineColor: '#FFFFFF',
-            lineWidth: 1.5,
-            lineOpacity: 0.8,
+            lineColor: '#FFFDE7',
+            lineWidth: 1.4,
+            lineOpacity: 0.88,
+            lineCap: 'round',
+            lineJoin: 'round',
           ),
           sourceLayer: 'transportation',
         );
@@ -624,7 +661,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             textSize: 13,
             textColor: '#FFFFFF',
             textHaloColor: '#000000',
-            textHaloWidth: 1.8,
+            textHaloWidth: 2.0,
             textFont: ['Noto Sans Regular'],
             textAllowOverlap: false,
           ),
@@ -1159,11 +1196,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       service.invoke('appState', {'foreground': true});
       _rememberCamera();
-      AppSettings.load().then((_) {
+      AppSettings.load().then((_) async {
+        await _restoreActiveTrack();
         if (mounted) setState(() {});
         _startLocation();
         _startCompass();
-        _restoreActiveTrack();
         _syncMyLocationLayers(updateRings: true, updateTrack: true);
       });
       TrackRecorder.syncPendingTracks();
@@ -1941,6 +1978,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   MaterialPageRoute(
                       builder: (_) => const TracksHistoryScreen()),
                 );
+              } else if (value == 'export_events') {
+                _exportGroupEvents();
               } else if (value == 'rings') {
                 _toggleDistanceRings(!AppSettings.showDistanceRings);
               } else if (value == 'settings') {
@@ -1970,11 +2009,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   title: Text('История треков'),
                 ),
               ),
+              const PopupMenuItem<String>(
+                value: 'export_events',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.share_outlined),
+                  title: Text('Экспорт событий (GPX / CSV)'),
+                ),
+              ),
               CheckedPopupMenuItem<String>(
                 value: 'rings',
                 checked: AppSettings.showDistanceRings,
                 child: Text(
-                  'Круги (${AppSettings.ringDistancesMeters.join('/')} м)',
+                  'Круги (${AppSettings.ringDistancesMeters.map(AppSettings.formatRingDistance).join(' / ')})',
                 ),
               ),
               const PopupMenuItem<String>(
