@@ -176,15 +176,22 @@ void onStart(ServiceInstance service) async {
     });
   }
 
-  service.on('appState').listen((event) {
+  service.on('appState').listen((event) async {
     if (event != null && event['foreground'] is bool) {
-      isAppForeground = event['foreground'] as bool;
+      final newFg = event['foreground'] as bool;
+      isAppForeground = newFg;
+      if (!newFg) {
+        // Сбрасываем кэш последней точки, чтобы фон сравнил шаг с реальным хвостом файла после UI
+        await TrackRecorder.invalidateCache();
+        isTrackRecording = await TrackRecorder.isRecording();
+      }
     }
   });
 
-  service.on('trackState').listen((event) {
+  service.on('trackState').listen((event) async {
     if (event != null && event['recording'] is bool) {
       isTrackRecording = event['recording'] as bool;
+      await TrackRecorder.invalidateCache();
     }
   });
 
