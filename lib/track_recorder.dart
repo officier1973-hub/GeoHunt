@@ -139,6 +139,14 @@ class TrackRecorder {
     return next;
   }
 
+  /// Сбрасывает кэш последней точки в текущем изоляте, чтобы при следующей записи
+  /// хвост трека перечитался из `active_track.jsonl`.
+  static Future<void> invalidateCache() {
+    return _synchronized(() async {
+      _cachedLastPoint = null;
+    });
+  }
+
   static Future<Directory> _baseDir() => getApplicationDocumentsDirectory();
 
   static Future<File> _metaFile() async {
