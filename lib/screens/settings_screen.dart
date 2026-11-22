@@ -206,4 +206,110 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: Colors.white7
+                color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                RadioListTile<int>(
+                  title: const Text('Каждые 30 секунд'),
+                  value: 30,
+                  groupValue: AppSettings.dbInterval.inSeconds,
+                  onChanged: (val) async {
+                    await AppSettings.saveDbInterval(val!);
+                    if (mounted) setState(() {});
+                  },
+                ),
+                RadioListTile<int>(
+                  title: const Text('Раз в минуту'),
+                  value: 60,
+                  groupValue: AppSettings.dbInterval.inSeconds,
+                  onChanged: (val) async {
+                    await AppSettings.saveDbInterval(val!);
+                    if (mounted) setState(() {});
+                  },
+                ),
+                RadioListTile<int>(
+                  title: const Text('Раз в 5 минут (экономия)'),
+                  value: 300,
+                  groupValue: AppSettings.dbInterval.inSeconds,
+                  onChanged: (val) async {
+                    await AppSettings.saveDbInterval(val!);
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Карта и ориентирование',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SwitchListTile(
+                  title: const Text('Круги расстояния вокруг меня'),
+                  subtitle: Text('Радиусы: $ringsText'),
+                  value: AppSettings.showDistanceRings,
+                  onChanged: (val) async {
+                    await AppSettings.saveShowDistanceRings(val);
+                    if (mounted) setState(() {});
+                  },
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Настройка радиусов (м)',
+                        style: TextStyle(fontSize: 13, color: Colors.white70),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: distances.map((d) {
+                          return InputChip(
+                            label: Text(AppSettings.formatRingDistance(d)),
+                            onDeleted: () => _removeRing(d),
+                            deleteButtonTooltipMessage: 'Удалить',
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _showAddRingDialog,
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text('Добавить радиус'),
+                          ),
+                          const Spacer(),
+                          if (!isDefaultRings)
+                            TextButton(
+                              onPressed: _resetRings,
+                              child: const Text('Сбросить'),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
