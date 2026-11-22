@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
+import '../track_exporter.dart';
 import '../track_recorder.dart';
 
 class TrackPreviewScreen extends StatefulWidget {
@@ -18,7 +19,7 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
   bool _isSwitchingStyle = false;
 
   static const String _satelliteTileUrl =
-      'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg';
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
   static const String _baseStyleUrl =
       'https://tiles.openfreemap.org/styles/positron';
   static const List<String> _styleNames = ['Улицы', 'Спутник', 'Гибрид'];
@@ -101,7 +102,9 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
     try {
       try { await ctrl.removeLayer('satellite_layer'); } catch (_) {}
       try { await ctrl.removeSource('satellite_source'); } catch (_) {}
+      try { await ctrl.removeLayer('waterway_layer'); } catch (_) {}
       try { await ctrl.removeLayer('roads_layer'); } catch (_) {}
+      try { await ctrl.removeLayer('roads_casing_layer'); } catch (_) {}
       try { await ctrl.removeLayer('labels_layer'); } catch (_) {}
       try { await ctrl.removeLayer('preview_endpoints_layer'); } catch (_) {}
       try { await ctrl.removeLayer('preview_track_layer'); } catch (_) {}
@@ -116,9 +119,9 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
             tiles: [_satelliteTileUrl],
             tileSize: 256,
             minzoom: 0,
-            maxzoom: 14,
+            maxzoom: 17,
             attribution:
-                '<a href="https://cloudless.eox.at">EOxCloudless</a> by EOX IT Services GmbH',
+                'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
           ),
         );
         await ctrl.addRasterLayer(
@@ -131,14 +134,41 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
       if (_currentStyleIndex == 2) {
         await ctrl.addLineLayer(
           'openmaptiles',
-          'roads_layer',
+          'waterway_layer',
           LineLayerProperties(
-            lineColor: '#FFFFFF',
-            lineWidth: 1.5,
-            lineOpacity: 0.8,
+            lineColor: '#4FC3F7',
+            lineWidth: 1.2,
+            lineOpacity: 0.65,
+          ),
+          sourceLayer: 'waterway',
+        );
+
+        await ctrl.addLineLayer(
+          'openmaptiles',
+          'roads_casing_layer',
+          LineLayerProperties(
+            lineColor: '#000000',
+            lineWidth: 3.0,
+            lineOpacity: 0.45,
+            lineCap: 'round',
+            lineJoin: 'round',
           ),
           sourceLayer: 'transportation',
         );
+
+        await ctrl.addLineLayer(
+          'openmaptiles',
+          'roads_layer',
+          LineLayerProperties(
+            lineColor: '#FFFDE7',
+            lineWidth: 1.4,
+            lineOpacity: 0.88,
+            lineCap: 'round',
+            lineJoin: 'round',
+          ),
+          sourceLayer: 'transportation',
+        );
+
         await ctrl.addSymbolLayer(
           'openmaptiles',
           'labels_layer',
@@ -147,7 +177,7 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
             textSize: 13,
             textColor: '#FFFFFF',
             textHaloColor: '#000000',
-            textHaloWidth: 1.8,
+            textHaloWidth: 2.0,
             textFont: ['Noto Sans Regular'],
             textAllowOverlap: false,
           ),
@@ -250,6 +280,11 @@ class _TrackPreviewScreenState extends State<TrackPreviewScreen> {
       appBar: AppBar(
         title: Text(t.title, overflow: TextOverflow.ellipsis),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.share_outlined),
+            tooltip: 'Экспорт GPX / CSV',
+            onPressed: () => TrackExporter.showTrackExportSheet(context, t),
+          ),
           IconButton(
             icon: const Icon(Icons.fit_screen),
             tooltip: 'Показать весь трек',
