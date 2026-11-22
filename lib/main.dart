@@ -11,6 +11,7 @@ import 'app_session.dart';
 import 'app_settings.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'track_recorder.dart';
 
 const supabaseUrl = 'https://qucrbwsudcwqetcullsp.supabase.co';
@@ -224,6 +225,10 @@ class GeoHuntApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final startScreen = AppSession.hasSession
+        ? const MapScreen()
+        : const HomeScreen();
+
     return MaterialApp(
       title: 'GeoHunt',
       debugShowCheckedModeBanner: false,
@@ -234,7 +239,9 @@ class GeoHuntApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: AppSession.hasSession ? const MapScreen() : const HomeScreen(),
+      home: AppSettings.skipOnboarding
+          ? startScreen
+          : const OnboardingScreen(),
     );
   }
 }
