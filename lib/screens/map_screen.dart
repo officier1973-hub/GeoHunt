@@ -2017,11 +2017,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   title: Text('Экспорт событий (GPX / CSV)'),
                 ),
               ),
-              CheckedPopupMenuItem<String>(
+PopupMenuItem<String>(
                 value: 'rings',
-                checked: AppSettings.showDistanceRings,
-                child: Text(
-                  'Круги (${AppSettings.ringDistancesMeters.map(AppSettings.formatRingDistance).join(' / ')})',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.radar,
+                    color: AppSettings.showDistanceRings
+                        ? Colors.lightBlueAccent
+                        : Colors.white70,
+                  ),
+                  title: Text(
+                    'Круги (${AppSettings.ringDistancesMeters.map(AppSettings.formatRingDistance).join(' / ')})',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Icon(
+                    AppSettings.showDistanceRings
+                        ? Icons.check_box
+                        : Icons.check_box_outline_blank,
+                    color: AppSettings.showDistanceRings
+                        ? Colors.lightBlueAccent
+                        : Colors.white54,
+                    size: 20,
+                  ),
                 ),
               ),
 PopupMenuItem<String>(
