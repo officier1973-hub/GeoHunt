@@ -22,13 +22,15 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
+def keystorePath = System.getenv("KEYSTORE_PATH")
+def hasReleaseSigning = keystorePath != null && !keystorePath.trim().isEmpty() && file(keystorePath).exists()
+
 android {
-    namespace "com.example.hunt_together"
+    namespace "ru.geohunt.app"
     compileSdk 36
     ndkVersion "28.2.13676358"
 
     compileOptions {
-        // ✅ Включаем core library desugaring
         coreLibraryDesugaringEnabled true
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -43,16 +45,27 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.example.hunt_together"
+        applicationId "ru.geohunt.app"
         minSdk flutter.minSdkVersion
         targetSdk flutter.targetSdkVersion
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }
 
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(keystorePath)
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             shrinkResources false
         }
@@ -64,6 +77,5 @@ flutter {
 }
 
 dependencies {
-    // ✅ Добавляем зависимость для desugaring
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
 }
