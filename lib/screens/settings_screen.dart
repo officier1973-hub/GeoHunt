@@ -1,9 +1,15 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../app_session.dart';
 import '../app_settings.dart';
+import '../track_recorder.dart';
+import 'home_screen.dart';
 import 'onboarding_screen.dart';
+import 'privacy_policy_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -14,6 +20,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   static const List<int> _presetMeters = [50, 100, 150, 200, 300, 500, 1000, 2000];
+  bool _deletingData = false;
 
   @override
   void initState() {
@@ -137,6 +144,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final next = [...AppSettings.ringDistancesMeters, result];
       await AppSettings.saveRingDistances(next);
       if (mounted) setState(() {});
+    }
+  }
+
+  void _showAboutDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('О приложении'),
+        content: const Text(
+          'Коллективная охота\n'
+          'Версия: 1.0.0\n'
+          'Пакет: ru.geohunt.app\n\n'
+          'Источники карт:\n'
+          '• Улицы и подписи: OpenFreeMap (© OpenStreetMap contributors)\n'
+          '• Спутниковые снимки: Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics',
+          style: TextStyle(fontSize: 13.5, height: 1.4),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteAllUserData() async {
+    if (_deletingData) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить все ваши данные?'),
+        content: const Text(
+          'Будут безвозвратно удалены:\n'
+          '• все ваши сохранённые треки в облаке и на устройстве;\n'
+          '• ваша отметка участника в текущей группе;\n'
+          '• текущая запись трека и локальная сессия.\n\n'
+          'Для удаления данных в облаке требуется подключение к интернету.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Удалить всё'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _deletingData = true);
+    try {
+      final userId = Supabase.instance.client.auth.currentUser?.id ??
+          await AppSession.ensureSignedIn();
+      final hunterId = AppSession.hunterId;
+
+      if (userId != null) {
+        await Supabase.instance.client
+            .from('tracks')
+            .delete()
+            .eq('user_id', userId);
+        await Supabase.instance.client
+            .from('hunters')
+            .delete()
+            .eq('user_id', userId);
+      } else if (hunterId != null) {
+        await Supabase.instance.client
+            .from('hunters')
+            .delete()
+            .eq('id', hunterId);
+      }
+
+      await TrackRecorder.discardActiveTrack();
+      final pending = await TrackRecorder.loadPendingTracks();
+      for (final t in pending) {
+        await TrackRecorder.deletePendingTrack(t.id);
+      }
+
+      FlutterBackgroundService().invoke('stopService');
+      await AppSession.clear();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Все ваши облачные и локальные данные удалены')),
+      );
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        (_) => false,
+      );
+    } catch (e) {
+      debugPrint('Delete all data error: $e');
+      _toast('Не удалось удалить данные в облаке. Проверьте интернет и повторите.');
+    } finally {
+      if (mounted) setState(() => _deletingData = false);
     }
   }
 
@@ -334,7 +441,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.menu_book_outlined),
                   title: const Text('Открыть инструкцию'),
-                  subtitle: const Text('Просмотреть все возможности GeoHunt'),
+                  subtitle: const Text('Просмотреть все возможности приложения'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Navigator.push(
@@ -349,6 +456,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 24),
+          const Text(
+            'Конфиденциальность и данные',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.privacy_tip_outlined),
+                  title: const Text('Политика конфиденциальности'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const PrivacyPolicyScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('О приложении и источники карт'),
+                  subtitle: const Text('Версия 1.0.0 · ru.geohunt.app'),
+                  onTap: _showAboutDialog,
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: _deletingData
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_forever_outlined,
+                          color: Colors.redAccent),
+                  title: const Text(
+                    'Удалить все мои данные',
+                    style: TextStyle(color: Colors.redAccent),
+                  ),
+                  subtitle: const Text('Стереть облачные треки, метку и сессию'),
+                  enabled: !_deletingData,
+                  onTap: _deleteAllUserData,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
         ],
       ),
     );
