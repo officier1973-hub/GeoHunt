@@ -47,18 +47,36 @@ jobs:
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons
 
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Secret KEYSTORE_BASE64 is not set!"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | tr -d '\n\r ' | base64 --decode > "${{ runner.temp }}/release-keystore.jks"
+
       - name: Build APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/release-keystore.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: flutter build apk --release
 
-      # ✅ Переименовываем APK перед загрузкой
       - name: Rename APK
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk \
              build/app/outputs/flutter-apk/GeoHunt-release.apk
 
+      - name: Verify APK signature
+        run: |
+          keytool -printcert -jarfile build/app/outputs/flutter-apk/GeoHunt-release.apk | head -n 20
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v6
         with:
-          name: GeoHunt-release-apk   # имя артефакта в списке (можно любое)
+          name: GeoHunt-release-apk
           path: build/app/outputs/flutter-apk/GeoHunt-release.apk
           retention-days: 7
