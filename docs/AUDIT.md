@@ -1,10 +1,10 @@
-# 📋 ПОЛНЫЙ ТЕХНИЧЕСКИЙ АУДИТ И ПАСПОРТ ПРОЕКТА: Коллективная охота / GeoHunt (Release 8.0)
+# 📋 ПОЛНЫЙ ТЕХНИЧЕСКИЙ АУДИТ И ПАСПОРТ ПРОЕКТА: Коллективная охота / GeoHunt (Release 8.1)
 
 > **Инструкция для нового чата / ИИ (критически важно прочитать перед работой):**
 > 1. **Среда разработки владельца:** работа ведётся на **Mac исключительно через веб-интерфейсы в браузере**:
 >    * **Код и файлы:** GitHub Web Editor (редактирование/создание/удаление файлов напрямую на сайте GitHub).
 >    * **Сборка APK:** только в облаке через **GitHub Actions** (локально Flutter / Android Studio не установлены).
->    * **Бэкенд:** **Supabase Dashboard** (SQL Editor, Table Editor, Auth, Cron) через браузер.
+>    * **Бэкенд и анти-сон БД:** **Supabase Dashboard** (SQL Editor, Table Editor, Auth, Cron) + **cron-job.org** через браузер.
 >    * **Публикация и веб-страницы:** **RuStore Консоль** и **GitHub Pages** через браузер.
 >    * *(Единственный локальный инструмент, установленный на Mac разово — Temurin JDK 21, использовался в Терминале для генерации `geohunt-release.jks`).*
 > 2. **Правила выдачи кода и инструкций:**
@@ -22,7 +22,7 @@
 * **Техническое имя репозитория / проекта:** `GeoHunt` (`name: hunt_together` в `pubspec.yaml`).
 * **Идентификатор пакета (`applicationId` / `namespace`):** `ru.geohunt.app` *(перенесён с шаблонного `com.example.hunt_together`; `MainActivity.kt` перенесён в `android/app/src/main/kotlin/ru/geohunt/app/MainActivity.kt`)*.
 * **Версия релиза:** `1.0.0+1` (`versionName: 1.0.0`, `versionCode: 1` в `pubspec.yaml`).
-* **Аккаунт RuStore:** Физическое лицо (вход через VK ID, `https://console.rustore.ru`), бесплатное приложение без встроенных платежей (IAP), рекомендуемый возрастной рейтинг `16+`.
+* **Аккаунт RuStore:** Физическое лицо (вход через VK ID, `https://console.rustore.ru`), бесплатное приложение без встроенных платежей (IAP), возрастной рейтинг `16+`.
 * **Релизная подпись (`keystore`):**
   * Файл `geohunt-release.jks` (`RSA 2048`, `alias: geohunt`, срок `10000` дней) сгенерирован на Mac и хранится локально у владельца (**нельзя терять** — без него невозможны будущие обновления в RuStore; **нельзя коммитить** в публичный репозиторий).
   * Передан в облачную сборку через **GitHub Secrets**: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` (`geohunt`), `KEY_PASSWORD`.
@@ -84,11 +84,12 @@
   * Хранилище, медиа и экспорт: `shared_preferences: ^2.3.0`, `path_provider: ^2.1.3`, `audioplayers: ^6.0.0`, `share_plus: ^13.3.1`
   * Иконки: `flutter_launcher_icons: ^0.14.1`
 * **CI/CD и Android:** GitHub Actions (`ubuntu-24.04`), Java 21 (Temurin), Gradle `9.3.1`, AGP `9.1.1`, Kotlin `2.4.10`, `compileSdk 36`, NDK `28.2.13676358`.
-* **Внешние облачные ресурсы проекта:**
-  * **GitHub** (публичный репозиторий + Actions для сборки APK и keep-alive + GitHub Pages для `docs/privacy-policy.html`).
+* **Все облачные ресурсы проекта:**
+  * **GitHub:** публичный репозиторий + Actions (сборка APK, резервный keep-alive) + GitHub Pages (`docs/privacy-policy.html`).
   * **Supabase (Free tier):** `https://qucrbwsudcwqetcullsp.supabase.co` (PostgreSQL, Anonymous Auth, RLS, Realtime, `pg_cron`).
+  * **cron-job.org:** внешний планировщик (`https://console.cron-job.org/jobs`) для независимого ежедневного keep-alive пинга Supabase с уведомлениями на почту при сбоях.
   * **Тайловые серверы:** OpenFreeMap (`tiles.openfreemap.org`) и Esri World Imagery (`server.arcgisonline.com`).
-  * **RuStore Консоль:** `https://console.rustore.ru` (публикация APK `ru.geohunt.app`).
+  * **RuStore Консоль:** `https://console.rustore.ru` (публикация и обновления `ru.geohunt.app`).
 
 ---
 
@@ -98,7 +99,7 @@
 GeoHunt/
 ├── .github/workflows/
 │   ├── build-apk.yml                 # Release APK: кэш Gradle, декодирование keystore, подпись, keytool verify
-│   └── supabase-keepalive.yml        # (Опционально/настраивается) Пинг Supabase раз в 2 дня против паузы Free-тарифа
+│   └── supabase-keepalive.yml        # Внешний пинг Supabase раз в 2 дня (дублируется через cron-job.org)
 ├── android/
 │   ├── gradle.properties             # Параметры JVM и AndroidX
 │   ├── gradle/wrapper/               # Gradle 9.3.1
